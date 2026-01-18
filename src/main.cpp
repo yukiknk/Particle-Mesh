@@ -1,7 +1,10 @@
 #include <array>
 
+#include "mpi_env.h"
+
 int main(int argc, char** argv) {
-    //MPIクラス初期化
+    //MPI初期化
+    MPIEnv mpi_env(argc, argv);
 
     //バッファ初期化
     //Grid初期化

@@ -1,12 +1,13 @@
 #include <array>
 
 #include "mpi_env.h"
+#include "buffer_manager.h"
 
 int main(int argc, char** argv) {
     //MPI初期化
     MPIEnv mpi_env(argc, argv);
 
-    //バッファ初期化
+    BufferManager buffer_manager; //バッファ初期化
     //Grid初期化
     //FFT初期化
     //Transpose_FWD初期化

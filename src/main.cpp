@@ -19,13 +19,15 @@ int main(int argc, char** argv) {
 
     BufferManager buffer_manager; //バッファ初期化
     Grid grid(Ng, mpi_env); //Grid初期化
-    //FFT初期化
+    FFT fft(Ng, Omega0, mpi_env, buffer_manager); //FFT初期化
     //Transpose_FWD初期化
     //Transpose_BWD初期化
     //Particle初期化
     //Interpolater初期化
     
     //バッファ確保
+    buffer_manager.allocate();
+    fft.create_plan();
 
     //ループのセットアップ
     std::array<double, 9> exe_time;
@@ -43,9 +45,9 @@ int main(int argc, char** argv) {
         //alltoallv
         //unpack
 
-        //FFT
-        //Green
-        //IFFT
+        fft.forward(); //FFT
+        fft.apply_green(a); //Green
+        fft.backward(); //IFFT
 
         //pack
         //alltoallv

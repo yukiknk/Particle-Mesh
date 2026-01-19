@@ -1,14 +1,24 @@
 #include <array>
+#include <cstdlib>
 
 #include "mpi_env.h"
 #include "buffer_manager.h"
+#include "grid.h"
 
 int main(int argc, char** argv) {
     //MPI初期化
     MPIEnv mpi_env(argc, argv);
 
+    if (argc < 2) {
+        if (mpi_env.world_rank() == 0) {
+            std::cerr << "Usage: " << argv[0] << " <Ng>" << std::endl;
+        }
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
+    int Ng = std::atoi(argv[1]);
+
     BufferManager buffer_manager; //バッファ初期化
-    //Grid初期化
+    Grid grid(Ng, mpi_env); //Grid初期化
     //FFT初期化
     //Transpose_FWD初期化
     //Transpose_BWD初期化

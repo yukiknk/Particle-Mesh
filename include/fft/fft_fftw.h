@@ -2,8 +2,8 @@
 #include <mpi.h>
 #include <fftw3-mpi.h>
 
-#include "mpi_env.hpp"
-#include "buffer_manager.hpp"
+#include "mpi_env.h"
+#include "buffer_manager.h"
 
 class FFT {
 public:

@@ -4,8 +4,8 @@
 #include <iostream>
 #include <mpi.h>
 
-#include "mpi_env.hpp"
-#include "grid/grid.hpp"
+#include "mpi_env.h"
+#include "grid/grid.h"
 
 struct Particle {
     int np;

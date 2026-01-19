@@ -1,5 +1,5 @@
-#include "fft/fft_fftw.hpp"
-#include "utils.hpp"
+#include "fft/fft_fftw.h"
+#include "utils.h"
 #include <cmath>
 #include <iostream>
 #include <omp.h>

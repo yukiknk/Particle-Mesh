@@ -1,7 +1,7 @@
 #pragma once
 
 #if defined(USE_FFTW)
-#include "fft_fftw.hpp"
+#include "fft_fftw.h"
 #else
-#include "fft_fftw.hpp"  // デフォルト
+#include "fft_fftw.h"  // デフォルト
 #endif

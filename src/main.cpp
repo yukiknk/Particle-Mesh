@@ -4,18 +4,23 @@
 #include "mpi_env.h"
 #include "buffer_manager.h"
 #include "grid.h"
+#include "particle/particle.h"
+#include "fft/fft.h"
 
 int main(int argc, char** argv) {
     //MPI初期化
     MPIEnv mpi_env(argc, argv);
 
-    if (argc < 2) {
+    if (argc < 3) {
         if (mpi_env.world_rank() == 0) {
-            std::cerr << "Usage: " << argv[0] << " <Ng>" << std::endl;
+            std::cerr << "Usage: " << argv[0] << " <Ng> <Np>" << std::endl;
         }
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
     int Ng = std::atoi(argv[1]);
+    int Np = std::atoi(argv[2]);
+
+    const double Omega0 = 1.0;
 
     BufferManager buffer_manager; //バッファ初期化
     Grid grid(Ng, mpi_env); //Grid初期化
@@ -23,6 +28,7 @@ int main(int argc, char** argv) {
     //Transpose_FWD初期化
     //Transpose_BWD初期化
     //Particle初期化
+    Particle particle(Np, grid, mpi_env);
     //Interpolater初期化
     
     //バッファ確保

@@ -1,6 +1,6 @@
-// grid_auto.hpp
 #pragma once
 #include <mpi.h>
+#include "mpi_env.h"
 
 struct Grid {
     int Ng;
@@ -10,12 +10,13 @@ struct Grid {
     int nx, ny, nz;
     int n_local;
     
-    Grid(int Ng_, int rank, int nprocs) 
+    Grid(int Ng_, const MPIEnv& mpi) 
         : Ng(Ng_) 
     {
         dims[0] = dims[1] = dims[2] = 0;
-        MPI_Dims_create(nprocs, 3, dims);
+        MPI_Dims_create(mpi.world_size(), 3, dims);
         
+        int rank = mpi.world_rank();
         coords[0] = rank / (dims[1] * dims[2]);
         coords[1] = (rank / dims[2]) % dims[1];
         coords[2] = rank % dims[2];

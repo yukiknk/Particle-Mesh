@@ -30,6 +30,7 @@ int main(int argc, char** argv) {
     //Transpose_BWD初期化
     Particle particle(Np, grid, mpi_env); //Particle初期化
     Interpolater interpolater(grid, particle, mpi_env, buffer_manager); //Interpolater初期化
+    
     //バッファ確保
     buffer_manager.allocate();
     fft.create_plan();

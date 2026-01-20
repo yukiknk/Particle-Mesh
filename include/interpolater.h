@@ -10,7 +10,7 @@
 
 class Interpolater {
 public:
-    Interpolater(const Grid& grid, const Particle& particle, const MPIEnv& mpi, BufferManager& buffer);
+    Interpolater(const Grid& grid, Particle& particle, const MPIEnv& mpi, BufferManager& buffer);
     
     Interpolater(const Interpolater&) = delete;
     Interpolater& operator=(const Interpolater&) = delete;

@@ -4,9 +4,11 @@
 
 #include "mpi_env.h"
 #include "buffer_manager.h"
-#include "grid.h"
+#include "grid/grid.h"
 #include "particle/particle.h"
 #include "fft/fft.h"
+#include "transpose/transpose_slab_fwd.h"
+#include "interpolater.h"
 
 int main(int argc, char** argv) {
     //MPI初期化

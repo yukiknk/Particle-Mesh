@@ -21,12 +21,14 @@ public:
     void apply_green(double a);
 
     int color() const { return color_; }
+    int stride() const { return stride_; }
     ptrdiff_t local_n0() const { return local_n0_; }
     ptrdiff_t local_0_start() const { return local_0_start_; }
 
 private:
     int Ng_;
     int color_;
+    int stride_;
     MPI_Comm comm_ = MPI_COMM_NULL;
     
     ptrdiff_t local_alloc_ = 0;

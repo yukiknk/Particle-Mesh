@@ -4,7 +4,7 @@
 #include <iostream>
 #include <omp.h>
 
-FFT::FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer) : Ng_(Ng) {
+FFT::FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer) : Ng_(Ng), stride_(Ng + 2) {
     fftw_init_threads();
     fftw_mpi_init();
     fftw_plan_with_nthreads(mpi.nthreads());

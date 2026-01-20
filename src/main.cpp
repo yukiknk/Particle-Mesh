@@ -48,6 +48,8 @@ int main(int argc, char** argv) {
 
     //メインループ
     for (int i = 0; i < all_loop; i++) {
+        timer.set_iteration(i);
+        
         interpolater.deposit(); //deposit
 
         transpose_fwd.execute();

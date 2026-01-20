@@ -102,7 +102,7 @@ TransposeSlabFwd::TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEn
     size_t index = 0;
     for (int r = 0; r < group_size_; ++r) {
         int xi_base = group_vx0[r] - local_0_start;
-        if (xi_base < 0 || xi_base > local_n0) xi_base = 0;
+        if (xi_base < 0 || xi_base >= local_n0) xi_base = 0;
         
         int nyz = (group_vny[r] + 1) * (group_vnz[r] + 1);
         

@@ -38,7 +38,7 @@ private:
     MPI_Comm comm_ = MPI_COMM_NULL;
     
     ptrdiff_t local_alloc_ = 0;
-    ptrdiff_t local_n0_ = 0;
+    ptrdiff_t local_n0_ = 1;
     ptrdiff_t local_0_start_ = 0;
     ptrdiff_t local_n1_ = 0;
     ptrdiff_t local_1_start_ = 0;

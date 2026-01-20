@@ -27,10 +27,8 @@ int main(int argc, char** argv) {
     FFT fft(Ng, Omega0, mpi_env, buffer_manager); //FFT初期化
     //Transpose_FWD初期化
     //Transpose_BWD初期化
-    //Particle初期化
-    Particle particle(Np, grid, mpi_env);
-    //Interpolater初期化
-    
+    Particle particle(Np, grid, mpi_env); //Particle初期化
+    Interpolater interpolater(grid, particle, mpi_env, buffer_manager); //Interpolater初期化
     //バッファ確保
     buffer_manager.allocate();
     fft.create_plan();
@@ -45,8 +43,8 @@ int main(int argc, char** argv) {
 
     //メインループ
     for (int i = 0; i < all_loop; i++) {
-        //cloud in cell
-
+        interpolater.deposit(); //deposit
+        
         //pack
         //alltoallv
         //unpack

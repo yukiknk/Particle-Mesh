@@ -1,26 +1,40 @@
 #include "transpose/transpose_slab_fwd.h"
 #include <omp.h>
+#include <cstring>
 
 TransposeSlabFwd::TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer)
     : world_size_(mpi.world_size()),
-      color_(fft.color()),
+      world_rank_(mpi.world_rank()),
       Ng_(grid.Ng),
       stride_(fft.stride()),
       nx1_(grid.nx + 1),
       ny1_(grid.ny + 1),
       nz1_(grid.nz + 1)
 {
-    sendcounts_.assign(world_size_, 0);
-    sdispls_.assign(world_size_, 0);
-    recvcounts_.assign(world_size_, 0);
-    rdispls_.assign(world_size_, 0);
+    // グループ分け
+    group_size_ = (world_size_ <= Ng_) ? world_size_ : Ng_;
+    num_groups_ = world_size_ / group_size_;
+    group_id_ = world_rank_ / group_size_;
+    local_rank_ = world_rank_ % group_size_;
+    
+    // グループ内コミュニケータ作成
+    MPI_Comm_split(MPI_COMM_WORLD, group_id_, local_rank_, &group_comm_);
+    
+    // Reduce用コミュニケータ（num_groups > 1の場合のみ使用）
+    if (num_groups_ > 1) {
+        MPI_Comm_split(MPI_COMM_WORLD, local_rank_, group_id_, &reduce_comm_);
+    }
+    
+    // 送受信量の計算（グループ内）
+    sendcounts_.assign(group_size_, 0);
+    sdispls_.assign(group_size_, 0);
+    recvcounts_.assign(group_size_, 0);
+    rdispls_.assign(group_size_, 0);
 
     int x0 = grid.x0;
     int local_n0 = static_cast<int>(fft.local_n0());
 
-    for (int r = 0; r < world_size_; ++r) {
-        if (r >= Ng_) continue;
-        
+    for (int r = 0; r < group_size_; ++r) {
         int s0 = r * local_n0;
         int s1 = s0 + local_n0;
         int l0 = std::max(s0, x0);
@@ -33,79 +47,103 @@ TransposeSlabFwd::TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEn
         }
     }
 
+    // x方向の+側境界のプロセスはゴーストをlocal_rank 0に送る
     if (grid.coords[0] == grid.dims[0] - 1) {
         sendcounts_[0] = ny1_ * nz1_;
         sdispls_[0] = grid.nx * ny1_ * nz1_;
     }
 
-    MPI_Alltoall(sendcounts_.data(), 1, MPI_INT, recvcounts_.data(), 1, MPI_INT, MPI_COMM_WORLD);
+    MPI_Alltoall(sendcounts_.data(), 1, MPI_INT, recvcounts_.data(), 1, MPI_INT, group_comm_);
 
-    for (int r = 1; r < world_size_; ++r) {
+    for (int r = 1; r < group_size_; ++r) {
         rdispls_[r] = rdispls_[r - 1] + recvcounts_[r - 1];
     }
 
     size_t recv_total = static_cast<size_t>(rdispls_.back()) + recvcounts_.back();
 
+    // FFTバッファサイズ
+    fft_buf_size_ = static_cast<size_t>(local_n0) * Ng_ * stride_;
+
+    // バッファ登録
     size_t sendbuf_size = static_cast<size_t>(nx1_) * ny1_ * nz1_;
-    size_t recvbuf_offset = align_to_64(sendbuf_size);
+    size_t fftbuf_size = fft_buf_size_;
+    size_t recvbuf_offset = align_to_64(std::max(sendbuf_size, fftbuf_size));
     size_t total_size = recvbuf_offset + align_to_64(recv_total);
 
     buffer.register_buffer(sendbuf_, 0);
-    buffer.register_buffer(recvbuf_, recvbuf_offset);
     buffer.register_buffer(fftbuf_, 0);
+    buffer.register_buffer(recvbuf_, recvbuf_offset);
     buffer.update_max_size(total_size);
 
-    if (color_ == 1) {
-        pos0_.resize(recv_total);
-        pos1_.resize(recv_total);
+    // reorder用のインデックスを構築
+    pos0_.resize(recv_total);
+    pos1_.resize(recv_total);
 
-        int local_0_start = static_cast<int>(fft.local_0_start());
+    int local_0_start = local_rank_ * local_n0;
 
-        size_t index = 0;
-        for (int r = 0; r < world_size_; ++r) {
-            int xi_base = grid.vx0[r] - local_0_start;
-            if (xi_base < 0 || xi_base > local_n0) xi_base = 0;
-            
-            int nyz = (grid.vny[r] + 1) * (grid.vnz[r] + 1);
-            
-            for (int i = 0; i < recvcounts_[r]; ++i) {
-                int xi = xi_base + i / nyz;
-                int yi = (grid.vy0[r] + (i / (grid.vnz[r] + 1)) % (grid.vny[r] + 1)) % Ng_;
-                int zi = (grid.vz0[r] + i % (grid.vnz[r] + 1)) % Ng_;
+    // グループ内の各プロセスのGrid情報を収集
+    std::vector<int> group_vx0(group_size_);
+    std::vector<int> group_vy0(group_size_);
+    std::vector<int> group_vz0(group_size_);
+    std::vector<int> group_vny(group_size_);
+    std::vector<int> group_vnz(group_size_);
+    
+    MPI_Allgather(&grid.x0, 1, MPI_INT, group_vx0.data(), 1, MPI_INT, group_comm_);
+    MPI_Allgather(&grid.y0, 1, MPI_INT, group_vy0.data(), 1, MPI_INT, group_comm_);
+    MPI_Allgather(&grid.z0, 1, MPI_INT, group_vz0.data(), 1, MPI_INT, group_comm_);
+    MPI_Allgather(&grid.ny, 1, MPI_INT, group_vny.data(), 1, MPI_INT, group_comm_);
+    MPI_Allgather(&grid.nz, 1, MPI_INT, group_vnz.data(), 1, MPI_INT, group_comm_);
 
-                pos0_[index] = (static_cast<size_t>(xi) * Ng_ + yi) * stride_ + zi;
-                ++index;
-            }
+    size_t index = 0;
+    for (int r = 0; r < group_size_; ++r) {
+        int xi_base = group_vx0[r] - local_0_start;
+        if (xi_base < 0 || xi_base > local_n0) xi_base = 0;
+        
+        int nyz = (group_vny[r] + 1) * (group_vnz[r] + 1);
+        
+        for (int i = 0; i < recvcounts_[r]; ++i) {
+            int xi = xi_base + i / nyz;
+            int yi = (group_vy0[r] + (i / (group_vnz[r] + 1)) % (group_vny[r] + 1)) % Ng_;
+            int zi = (group_vz0[r] + i % (group_vnz[r] + 1)) % Ng_;
+
+            pos0_[index] = (static_cast<size_t>(xi) * Ng_ + yi) * stride_ + zi;
+            ++index;
         }
-
-        std::vector<size_t> id(recv_total);
-        std::iota(id.begin(), id.end(), 0);
-        std::sort(id.begin(), id.end(), [&](size_t a, size_t b) { 
-            return pos0_[a] < pos0_[b]; 
-        });
-
-        std::vector<size_t> pos0_sorted(recv_total);
-        for (size_t i = 0; i < recv_total; ++i) {
-            pos0_sorted[i] = pos0_[id[i]];
-            pos1_[i] = id[i];
-        }
-        pos0_.swap(pos0_sorted);
-
-        seg_.reserve(recv_total + 1);
-        seg_.push_back(0);
-        for (size_t i = 1; i < recv_total; ++i) {
-            if (pos0_[i] != pos0_[i - 1]) {
-                seg_.push_back(i);
-            }
-        }
-        seg_.push_back(recv_total);
     }
+
+    std::vector<size_t> id(recv_total);
+    std::iota(id.begin(), id.end(), 0);
+    std::sort(id.begin(), id.end(), [&](size_t a, size_t b) { 
+        return pos0_[a] < pos0_[b]; 
+    });
+
+    std::vector<size_t> pos0_sorted(recv_total);
+    for (size_t i = 0; i < recv_total; ++i) {
+        pos0_sorted[i] = pos0_[id[i]];
+        pos1_[i] = id[i];
+    }
+    pos0_.swap(pos0_sorted);
+
+    seg_.reserve(recv_total + 1);
+    seg_.push_back(0);
+    for (size_t i = 1; i < recv_total; ++i) {
+        if (pos0_[i] != pos0_[i - 1]) {
+            seg_.push_back(i);
+        }
+    }
+    seg_.push_back(recv_total);
+}
+
+TransposeSlabFwd::~TransposeSlabFwd() {
+    if (group_comm_ != MPI_COMM_NULL) MPI_Comm_free(&group_comm_);
+    if (reduce_comm_ != MPI_COMM_NULL) MPI_Comm_free(&reduce_comm_);
 }
 
 void TransposeSlabFwd::execute() {
     alltoallv();
-    if (color_ == 1) {
-        reorder();
+    reorder();
+    if (num_groups_ > 1) {
+        reduce();
     }
 }
 
@@ -113,7 +151,7 @@ void TransposeSlabFwd::alltoallv() {
     MPI_Alltoallv(
         sendbuf_, sendcounts_.data(), sdispls_.data(), MPI_DOUBLE,
         recvbuf_, recvcounts_.data(), rdispls_.data(), MPI_DOUBLE,
-        MPI_COMM_WORLD
+        group_comm_
     );
 }
 
@@ -123,16 +161,47 @@ void TransposeSlabFwd::reorder() {
     const size_t* __restrict idx = pos1_.data();
     const size_t* __restrict key = pos0_.data();
 
-    #pragma omp parallel for schedule(guided)
-    for (size_t s = 0; s < S; ++s) {
-        const size_t beg = seg[s];
-        const size_t end = seg[s + 1];
-        
-        double acc = -1.0;
-        for (size_t k = beg; k < end; ++k) {
-            acc += recvbuf_[idx[k]];
+    if (group_id_ == 0) {
+        // -1.0で初期化
+        #pragma omp parallel for
+        for (size_t i = 0; i < fft_buf_size_; ++i) {
+            fftbuf_[i] = -1.0;
         }
         
-        fftbuf_[key[beg]] = acc;
+        #pragma omp parallel for schedule(guided)
+        for (size_t s = 0; s < S; ++s) {
+            const size_t beg = seg[s];
+            const size_t end = seg[s + 1];
+            
+            double acc = -1.0;
+            for (size_t k = beg; k < end; ++k) {
+                acc += recvbuf_[idx[k]];
+            }
+            
+            fftbuf_[key[beg]] = acc;
+        }
+    } else {
+        std::memset(fftbuf_, 0, fft_buf_size_ * sizeof(double));
+        
+        #pragma omp parallel for schedule(guided)
+        for (size_t s = 0; s < S; ++s) {
+            const size_t beg = seg[s];
+            const size_t end = seg[s + 1];
+            
+            double acc = 0.0;
+            for (size_t k = beg; k < end; ++k) {
+                acc += recvbuf_[idx[k]];
+            }
+            
+            fftbuf_[key[beg]] = acc;
+        }
+    }
+}
+
+void TransposeSlabFwd::reduce() {
+    if (group_id_ == 0) {
+        MPI_Reduce(MPI_IN_PLACE, fftbuf_, fft_buf_size_, MPI_DOUBLE, MPI_SUM, 0, reduce_comm_);
+    } else {
+        MPI_Reduce(fftbuf_, nullptr, fft_buf_size_, MPI_DOUBLE, MPI_SUM, 0, reduce_comm_);
     }
 }

@@ -5,9 +5,9 @@
 #include <omp.h>
 
 FFT::FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer) : timer_(timer), Ng_(Ng), stride_(Ng + 2) {
-    timer_.register_timer("FFT");
-    timer_.register_timer("IFFT");
-    timer_.register_timer("Green");
+    t_fft_ = timer_.register_timer("FFT");
+    t_ifft_ = timer_.register_timer("IFFT");
+    t_green_ = timer_.register_timer("Green");
     
     fftw_init_threads();
     fftw_mpi_init();

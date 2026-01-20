@@ -2,8 +2,9 @@
 #include <omp.h>
 #include <cstring>
 
-TransposeSlabFwd::TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer)
-    : world_size_(mpi.world_size()),
+TransposeSlabFwd::TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer, Timer& timer)
+    : timer_(timer),
+      world_size_(mpi.world_size()),
       world_rank_(mpi.world_rank()),
       Ng_(grid.Ng),
       stride_(fft.stride()),
@@ -11,6 +12,10 @@ TransposeSlabFwd::TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEn
       ny1_(grid.ny + 1),
       nz1_(grid.nz + 1)
 {
+    //タイマー登録
+    t_comm_ = timer_.register_timer("TransposeFwd Comm");
+    t_calc_ = timer_.register_timer("TransposeFwd Calc");
+
     // グループ分け
     group_size_ = (world_size_ <= Ng_) ? world_size_ : Ng_;
     num_groups_ = world_size_ / group_size_;
@@ -140,10 +145,18 @@ TransposeSlabFwd::~TransposeSlabFwd() {
 }
 
 void TransposeSlabFwd::execute() {
+    timer_.start();
     alltoallv();
+    timer_.stop(t_comm_);
+
+    timer_.start();
     reorder();
+    timer_.stop(t_calc_);
+    
     if (num_groups_ > 1) {
+        timer_.start();
         reduce();
+        timer_.stop(t_comm_);
     }
 }
 

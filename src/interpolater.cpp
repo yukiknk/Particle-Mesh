@@ -1,7 +1,8 @@
 #include "interpolater.h"
 
-Interpolater::Interpolater(const Grid& grid, Particle& particle, const MPIEnv& mpi, BufferManager& buffer)
-    : particle_(particle),
+Interpolater::Interpolater(const Grid& grid, const Particle& particle, const MPIEnv& mpi, BufferManager& buffer, Timer& timer)
+    : timer_(timer),
+      particle_(particle),
       x0_(grid.x0), y0_(grid.y0), z0_(grid.z0),
       nthreads_(mpi.nthreads()),
       mass_(1.0),
@@ -9,6 +10,9 @@ Interpolater::Interpolater(const Grid& grid, Particle& particle, const MPIEnv& m
       nz_ghost_(static_cast<size_t>(grid.nz + 1)),
       ncell_local_(static_cast<size_t>(grid.nx + 1) * (grid.ny + 1) * (grid.nz + 1))
 {
+    //タイマー登録
+    t_deposit_ = timer_.register_timer("Interpolater Deposit");
+    
     thread_buf_size_ = align_to_64(ncell_local_);
     size_t total_size = thread_buf_size_ * nthreads_;
     
@@ -17,6 +21,7 @@ Interpolater::Interpolater(const Grid& grid, Particle& particle, const MPIEnv& m
 }
 
 void Interpolater::deposit() {
+    timer_.start(t_deposit_);
     const int np = particle_.np;
     const double* __restrict px = particle_.x;
     const double* __restrict py = particle_.y;
@@ -82,6 +87,7 @@ void Interpolater::deposit() {
             }
         }
     }
+    timer_.stop(t_deposit_);
 }
 
 void Interpolater::gather() {

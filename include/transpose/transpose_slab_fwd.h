@@ -8,11 +8,12 @@
 #include "grid/grid.h"
 #include "fft/fft.h"
 #include "buffer_manager.h"
+#include "timer.h"
 #include "utils.h"
 
 class TransposeSlabFwd {
 public:
-    TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer);
+    TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer, Timer& timer);
     ~TransposeSlabFwd();
     
     TransposeSlabFwd(const TransposeSlabFwd&) = delete;
@@ -27,6 +28,11 @@ private:
     void reorder();
     void reduce();
 
+    Timer& timer_;
+    int t_comm_;
+    int t_calc_;
+
+    
     int world_size_;
     int world_rank_;
     int Ng_;

@@ -9,6 +9,7 @@
 #include "fft/fft.h"
 #include "transpose/transpose_slab_fwd.h"
 #include "interpolater.h"
+#include "timer.h"
 
 int main(int argc, char** argv) {
     //MPI初期化
@@ -25,6 +26,10 @@ int main(int argc, char** argv) {
 
     const double Omega0 = 1.0;
 
+    const int warm_up = 2;
+    const int loop = 10;
+    Timer timer(warm_up, loop, mpi_env.world_rank());
+
     BufferManager buffer_manager; //バッファ初期化
     Grid grid(Ng, mpi_env); //Grid初期化
     FFT fft(Ng, Omega0, mpi_env, buffer_manager); //FFT初期化
@@ -38,10 +43,6 @@ int main(int argc, char** argv) {
     fft.create_plan();
 
     //ループのセットアップ
-    std::array<double, 9> exe_time;
-    exe_time.fill(0.0);
-    const int warm_up = 2;
-    const int loop = 10;
     const int all_loop = warm_up + loop;
     double a = 0.9;
 
@@ -63,9 +64,7 @@ int main(int argc, char** argv) {
     }
 
     //時間出力
-    if (mpi_env.world_rank() == 0) {
-        std::cout << "Completed " << loop << " iterations" << std::endl;
-    }
+    timer.print();
 
     return 0;
 }

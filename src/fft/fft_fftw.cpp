@@ -4,7 +4,11 @@
 #include <iostream>
 #include <omp.h>
 
-FFT::FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer) : Ng_(Ng), stride_(Ng + 2) {
+FFT::FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer) : timer_(timer), Ng_(Ng), stride_(Ng + 2) {
+    timer_.register_timer("FFT");
+    timer_.register_timer("IFFT");
+    timer_.register_timer("Green");
+    
     fftw_init_threads();
     fftw_mpi_init();
     fftw_plan_with_nthreads(mpi.nthreads());
@@ -82,19 +86,24 @@ FFT::~FFT() {
 
 void FFT::forward() {
     if (color_ == 1) {
+        timer_.start();
         fftw_mpi_execute_dft_r2c(forward_, real_, complex_);
+        timer_.stop(t_fft_);
     }
 }
 
 void FFT::backward() {
     if (color_ == 1) {
+        timer_.start();
         fftw_mpi_execute_dft_c2r(backward_, complex_, real_);
+        timer_.stop(t_ifft_);
     }
 }
 
 void FFT::apply_green(double a) {
     if (color_ != 1) return;
 
+    timer_.start();
     const double inv_a = 1.0 / a;
     #pragma omp parallel for
     for (ptrdiff_t i = 0; i < local_alloc_; ++i) {
@@ -102,4 +111,5 @@ void FFT::apply_green(double a) {
         complex_[i][0] *= val;
         complex_[i][1] *= val;
     }
+    timer_.stop(t_green_);
 }

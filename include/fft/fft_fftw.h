@@ -4,10 +4,11 @@
 
 #include "mpi_env.h"
 #include "buffer_manager.h"
+#include "timer.h"
 
 class FFT {
 public:
-    FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer);
+    FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer);
     ~FFT();
     
     FFT(const FFT&) = delete;
@@ -26,6 +27,11 @@ public:
     ptrdiff_t local_0_start() const { return local_0_start_; }
 
 private:
+    Timer& timer_;
+    int t_fft_;
+    int t_ifft_;
+    int t_green_;
+
     int Ng_;
     int color_;
     int stride_;

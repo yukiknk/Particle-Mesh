@@ -2,6 +2,7 @@
 
 Interpolater::Interpolater(const Grid& grid, Particle& particle, const MPIEnv& mpi, BufferManager& buffer, Timer& timer)
     : timer_(timer),
+      world_rank_(mpi.world_rank()),
       particle_(particle),
       x0_(grid.x0), y0_(grid.y0), z0_(grid.z0),
       nthreads_(mpi.nthreads()),
@@ -18,6 +19,9 @@ Interpolater::Interpolater(const Grid& grid, Particle& particle, const MPIEnv& m
     
     buffer.register_buffer(buf_, 0);
     buffer.update_max_size(total_size);
+    if(world_rank_ == 0) {
+        std::cout << "Set Interpolater" << std::endl;
+    }
 }
 
 void Interpolater::deposit() {
@@ -88,6 +92,9 @@ void Interpolater::deposit() {
         }
     }
     timer_.stop(t_deposit_);
+    if(world_rank_ == 0) {
+        std::cout << "Deposit" << std::endl;
+    }
 }
 
 void Interpolater::gather() {

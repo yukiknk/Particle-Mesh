@@ -37,4 +37,6 @@ private:
     size_t thread_buf_size_;
     
     double* buf_ = nullptr;
+
+    int world_rank_;
 };

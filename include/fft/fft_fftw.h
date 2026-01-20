@@ -35,6 +35,7 @@ private:
     int Ng_;
     int color_;
     int stride_;
+    int world_rank_;
     MPI_Comm comm_ = MPI_COMM_NULL;
     
     ptrdiff_t local_alloc_ = 0;

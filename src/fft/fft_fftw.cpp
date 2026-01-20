@@ -4,7 +4,7 @@
 #include <iostream>
 #include <omp.h>
 
-FFT::FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer) : timer_(timer), Ng_(Ng), stride_(Ng + 2) {
+FFT::FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer) : timer_(timer), world_rank_(mpi.world_rank()), Ng_(Ng), stride_(Ng + 2) {
     t_fft_ = timer_.register_timer("FFT");
     t_ifft_ = timer_.register_timer("IFFT");
     t_green_ = timer_.register_timer("Green");
@@ -60,6 +60,9 @@ FFT::FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer&
             }
         }
     }
+    if(world_rank_ == 0) {
+        std::cout << "Set FFT" << std::endl;
+    }
 }
 
 void FFT::create_plan() {
@@ -89,6 +92,9 @@ void FFT::forward() {
         timer_.start();
         fftw_mpi_execute_dft_r2c(forward_, real_, complex_);
         timer_.stop(t_fft_);
+        if(world_rank_ == 0) {
+            std::cout << "FFT" << std::endl;
+        }
     }
 }
 
@@ -97,6 +103,9 @@ void FFT::backward() {
         timer_.start();
         fftw_mpi_execute_dft_c2r(backward_, complex_, real_);
         timer_.stop(t_ifft_);
+        if(world_rank_ == 0) {
+            std::cout << "IFFT" << std::endl;
+        }
     }
 }
 
@@ -112,4 +121,7 @@ void FFT::apply_green(double a) {
         complex_[i][1] *= val;
     }
     timer_.stop(t_green_);
+    if(world_rank_ == 0) {
+        std::cout << "Green" << std::endl;
+    }
 }

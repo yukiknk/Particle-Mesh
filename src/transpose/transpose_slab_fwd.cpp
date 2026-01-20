@@ -137,6 +137,10 @@ TransposeSlabFwd::TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEn
         }
     }
     seg_.push_back(recv_total);
+
+    if(world_rank_ == 0) {
+        std::cout << "Set TransposeFwd" << std::endl;
+    }
 }
 
 TransposeSlabFwd::~TransposeSlabFwd() {
@@ -145,30 +149,34 @@ TransposeSlabFwd::~TransposeSlabFwd() {
 }
 
 void TransposeSlabFwd::execute() {
-    timer_.start();
     alltoallv();
-    timer_.stop(t_comm_);
-
-    timer_.start();
-    reorder();
-    timer_.stop(t_calc_);
-    
+    if(world_rank_ == 0) {
+        std::cout << "Alltoallv" << std::endl;
+    }
+    reorder(); 
+    if(world_rank_ == 0) {
+        std::cout << "Reorder" << std::endl;
+    }   
     if (num_groups_ > 1) {
-        timer_.start();
         reduce();
-        timer_.stop(t_comm_);
+        if(world_rank_ == 0) {
+            std::cout << "Reduce" << std::endl;
+        }
     }
 }
 
 void TransposeSlabFwd::alltoallv() {
+    timer_.start();
     MPI_Alltoallv(
         sendbuf_, sendcounts_.data(), sdispls_.data(), MPI_DOUBLE,
         recvbuf_, recvcounts_.data(), rdispls_.data(), MPI_DOUBLE,
         group_comm_
     );
+    timer_.stop(t_comm_);
 }
 
 void TransposeSlabFwd::reorder() {
+    timer_.start();
     const size_t S = seg_.size() - 1;
     const size_t* __restrict seg = seg_.data();
     const size_t* __restrict idx = pos1_.data();
@@ -209,12 +217,15 @@ void TransposeSlabFwd::reorder() {
             fftbuf_[key[beg]] = acc;
         }
     }
+    timer_.stop(t_calc_);
 }
 
 void TransposeSlabFwd::reduce() {
+    timer_.start();
     if (group_id_ == 0) {
         MPI_Reduce(MPI_IN_PLACE, fftbuf_, fft_buf_size_, MPI_DOUBLE, MPI_SUM, 0, reduce_comm_);
     } else {
         MPI_Reduce(fftbuf_, nullptr, fft_buf_size_, MPI_DOUBLE, MPI_SUM, 0, reduce_comm_);
     }
+    timer_.stop(t_comm_);
 }

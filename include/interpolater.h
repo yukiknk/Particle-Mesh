@@ -6,7 +6,7 @@
 #include "grid/grid.h"
 #include "particle/particle.h"
 #include "buffer_manager.h"
-#include "timer.h
+#include "timer.h"
 #include "utils.h"
 
 class Interpolater {

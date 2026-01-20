@@ -1,6 +1,6 @@
 #include "interpolater.h"
 
-Interpolater::Interpolater(const Grid& grid, const Particle& particle, const MPIEnv& mpi, BufferManager& buffer, Timer& timer)
+Interpolater::Interpolater(const Grid& grid, Particle& particle, const MPIEnv& mpi, BufferManager& buffer, Timer& timer)
     : timer_(timer),
       particle_(particle),
       x0_(grid.x0), y0_(grid.y0), z0_(grid.z0),
@@ -21,7 +21,7 @@ Interpolater::Interpolater(const Grid& grid, const Particle& particle, const MPI
 }
 
 void Interpolater::deposit() {
-    timer_.start(t_deposit_);
+    timer_.start();
     const int np = particle_.np;
     const double* __restrict px = particle_.x;
     const double* __restrict py = particle_.y;

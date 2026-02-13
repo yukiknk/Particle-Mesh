@@ -1,6 +1,7 @@
 #include "transpose/transpose_slab_fwd.h"
 #include <omp.h>
 #include <cstring>
+#include "debug.h"
 
 TransposeSlabFwd::TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer, Timer& timer)
     : timer_(timer),
@@ -138,7 +139,7 @@ TransposeSlabFwd::TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEn
     seg_.push_back(recv_total);
 
     if(world_rank_ == 0) {
-        std::cout << "Set TransposeFwd" << std::endl;
+        DEBUG_LOG("Set TransposeFwd");
     }
 }
 
@@ -150,16 +151,16 @@ TransposeSlabFwd::~TransposeSlabFwd() {
 void TransposeSlabFwd::execute() {
     alltoallv();
     if(world_rank_ == 0) {
-    std::cout << "Alltoallv" << std::endl;
+        DEBUG_LOG("Alltoallv");
     }
     reorder(); 
     if(world_rank_ == 0) {
-    std::cout << "Reorder" << std::endl;
+        DEBUG_LOG("Reorder");
     }   
     if (num_groups_ > 1) {
         reduce();
         if(world_rank_ == 0) {
-        std::cout << "Reduce" << std::endl;
+            DEBUG_LOG("Reduce");
         }
     }
 }

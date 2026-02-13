@@ -2,6 +2,7 @@
 #include "utils.h"
 #include <cmath>
 #include <iostream>
+#include "debug.h"
 #include <omp.h>
 
 FFT::FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer) : timer_(timer), world_rank_(mpi.world_rank()), Ng_(Ng), stride_(Ng + 2) {
@@ -63,7 +64,7 @@ FFT::FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer&
         }
     }
     if(world_rank_ == 0) {
-        std::cout << "Set FFT" << std::endl;
+        DEBUG_LOG("Set FFT");
     }
 }
 
@@ -95,7 +96,7 @@ void FFT::forward() {
         fftw_mpi_execute_dft_r2c(forward_, real_, complex_);
         timer_.stop(t_fft_, comm_);
         if(world_rank_ == 0) {
-            std::cout << "FFT" << std::endl;
+            DEBUG_LOG("FFT");
         }
     }
 }
@@ -106,7 +107,7 @@ void FFT::backward() {
         fftw_mpi_execute_dft_c2r(backward_, complex_, real_);
         timer_.stop(t_ifft_, comm_);
         if(world_rank_ == 0) {
-            std::cout << "IFFT" << std::endl;
+            DEBUG_LOG("IFFT");
         }
     }
 }
@@ -124,6 +125,6 @@ void FFT::apply_green(double a) {
     }
     timer_.stop(t_green_, comm_);
     if(world_rank_ == 0) {
-        std::cout << "Green" << std::endl;
+        DEBUG_LOG("Green");
     }
 }

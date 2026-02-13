@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <mpi.h>
+#include "debug.h"
 
 #include "mpi_env.h"
 #include "grid/grid.h"
@@ -50,7 +51,7 @@ struct Particle {
         }
 
         if(mpi.world_rank() == 0) {
-            std::cout << "Set Particle" << std::endl;
+            DEBUG_LOG("Set Particle");
         }
     }
     

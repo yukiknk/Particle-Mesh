@@ -48,6 +48,10 @@ struct Particle {
             vy[i] = 0.0;
             vz[i] = 0.0;
         }
+
+        if(mpi.world_rank() == 0) {
+            std::cout << "Set Particle" << std::endl;
+        }
     }
     
     ~Particle() {

@@ -17,7 +17,7 @@ public:
         registrations_.push_back({&ptr, offset});
     }
     
-    void allocate() {
+    void allocate(int world_rank) {
         if (max_size_ == 0) {
             std::cerr << "BufferManager: max_size is 0" << std::endl;
             MPI_Abort(MPI_COMM_WORLD, 1);
@@ -38,6 +38,10 @@ public:
         
         for (auto& reg : registrations_) {
             *reg.ptr = data_ + reg.offset;
+        }
+
+        if(world_rank == 0) {
+            std::cout << "BufferManager: allocated " << max_size_ << "* sizeof(double)" << std::endl;
         }
     }
 

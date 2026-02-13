@@ -4,10 +4,11 @@
 
 #include "mpi_env.h"
 #include "buffer_manager.h"
+#include "timer.h"
 
 class FFT {
 public:
-    FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer);
+    FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer);
     ~FFT();
     
     FFT(const FFT&) = delete;
@@ -21,16 +22,25 @@ public:
     void apply_green(double a);
 
     int color() const { return color_; }
+    int stride() const { return stride_; }
     ptrdiff_t local_n0() const { return local_n0_; }
     ptrdiff_t local_0_start() const { return local_0_start_; }
+    ptrdiff_t local_alloc() const { return local_alloc_; }
 
 private:
+    Timer& timer_;
+    int t_fft_;
+    int t_ifft_;
+    int t_green_;
+
     int Ng_;
     int color_;
+    int stride_;
+    int world_rank_;
     MPI_Comm comm_ = MPI_COMM_NULL;
     
     ptrdiff_t local_alloc_ = 0;
-    ptrdiff_t local_n0_ = 0;
+    ptrdiff_t local_n0_ = 1;
     ptrdiff_t local_0_start_ = 0;
     ptrdiff_t local_n1_ = 0;
     ptrdiff_t local_1_start_ = 0;

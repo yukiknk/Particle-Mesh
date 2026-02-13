@@ -6,11 +6,12 @@
 #include "grid/grid.h"
 #include "particle/particle.h"
 #include "buffer_manager.h"
+#include "timer.h"
 #include "utils.h"
 
 class Interpolater {
 public:
-    Interpolater(const Grid& grid, const Particle& particle, const MPIEnv& mpi, BufferManager& buffer);
+    Interpolater(const Grid& grid, Particle& particle, const MPIEnv& mpi, BufferManager& buffer, Timer& timer);
     
     Interpolater(const Interpolater&) = delete;
     Interpolater& operator=(const Interpolater&) = delete;
@@ -22,6 +23,9 @@ public:
 
 private:
     Particle& particle_;
+
+    Timer& timer_;
+    int t_deposit_;
     
     int x0_, y0_, z0_;
     int nthreads_;
@@ -33,4 +37,6 @@ private:
     size_t thread_buf_size_;
     
     double* buf_ = nullptr;
+
+    int world_rank_;
 };

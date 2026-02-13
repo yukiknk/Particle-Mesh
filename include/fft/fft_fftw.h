@@ -25,6 +25,7 @@ public:
     int stride() const { return stride_; }
     ptrdiff_t local_n0() const { return local_n0_; }
     ptrdiff_t local_0_start() const { return local_0_start_; }
+    ptrdiff_t local_alloc() const { return local_alloc_; }
 
 private:
     Timer& timer_;

@@ -25,7 +25,7 @@ Interpolater::Interpolater(const Grid& grid, Particle& particle, const MPIEnv& m
 }
 
 void Interpolater::deposit() {
-    timer_.start();
+    timer_.start(MPI_COMM_WORLD);
     const int np = particle_.np;
     const double* __restrict px = particle_.x;
     const double* __restrict py = particle_.y;
@@ -91,7 +91,7 @@ void Interpolater::deposit() {
             }
         }
     }
-    timer_.stop(t_deposit_);
+    timer_.stop(t_deposit_, MPI_COMM_WORLD);
     if(world_rank_ == 0) {
         std::cout << "Deposit" << std::endl;
     }

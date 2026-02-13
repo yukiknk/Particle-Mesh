@@ -67,12 +67,11 @@ TransposeSlabFwd::TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEn
     size_t recv_total = static_cast<size_t>(rdispls_.back()) + recvcounts_.back();
 
     // FFTバッファサイズ
-    fft_buf_size_ = static_cast<size_t>(local_n0) * Ng_ * stride_;
+    fft_buf_size_ = align_to_64(static_cast<size_t>(fft.local_alloc()) * 2);
 
     // バッファ登録
-    size_t sendbuf_size = static_cast<size_t>(nx1_) * ny1_ * nz1_;
-    size_t fftbuf_size = fft_buf_size_;
-    size_t recvbuf_offset = align_to_64(std::max(sendbuf_size, fftbuf_size));
+    size_t sendbuf_size = align_to_64(static_cast<size_t>(nx1_) * ny1_ * nz1_);
+    size_t recvbuf_offset = std::max(sendbuf_size, fft_buf_size_);
     size_t total_size = recvbuf_offset + align_to_64(recv_total);
 
     buffer.register_buffer(sendbuf_, 0);
@@ -80,11 +79,11 @@ TransposeSlabFwd::TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEn
     buffer.register_buffer(recvbuf_, recvbuf_offset);
     buffer.update_max_size(total_size);
 
-    // reorder用のインデックスを構築
+    //reorder用のインデックスを構築
     pos0_.resize(recv_total);
     pos1_.resize(recv_total);
 
-    int local_0_start = local_rank_ * local_n0;
+    int local_0_start = fft.local_0_start();
 
     // グループ内の各プロセスのGrid情報を収集
     std::vector<int> group_vx0(group_size_);
@@ -130,7 +129,7 @@ TransposeSlabFwd::TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEn
     pos0_.swap(pos0_sorted);
 
     seg_.reserve(recv_total + 1);
-    seg_.push_back(0);
+    if(recv_total > 0) seg_.push_back(0);
     for (size_t i = 1; i < recv_total; ++i) {
         if (pos0_[i] != pos0_[i - 1]) {
             seg_.push_back(i);
@@ -151,32 +150,32 @@ TransposeSlabFwd::~TransposeSlabFwd() {
 void TransposeSlabFwd::execute() {
     alltoallv();
     if(world_rank_ == 0) {
-        std::cout << "Alltoallv" << std::endl;
+    std::cout << "Alltoallv" << std::endl;
     }
     reorder(); 
     if(world_rank_ == 0) {
-        std::cout << "Reorder" << std::endl;
+    std::cout << "Reorder" << std::endl;
     }   
     if (num_groups_ > 1) {
         reduce();
         if(world_rank_ == 0) {
-            std::cout << "Reduce" << std::endl;
+        std::cout << "Reduce" << std::endl;
         }
     }
 }
 
 void TransposeSlabFwd::alltoallv() {
-    timer_.start();
+    timer_.start(MPI_COMM_WORLD);
     MPI_Alltoallv(
         sendbuf_, sendcounts_.data(), sdispls_.data(), MPI_DOUBLE,
         recvbuf_, recvcounts_.data(), rdispls_.data(), MPI_DOUBLE,
         group_comm_
     );
-    timer_.stop(t_comm_);
+    timer_.stop(t_comm_, MPI_COMM_WORLD);
 }
 
 void TransposeSlabFwd::reorder() {
-    timer_.start();
+    timer_.start(MPI_COMM_WORLD);
     const size_t S = seg_.size() - 1;
     const size_t* __restrict seg = seg_.data();
     const size_t* __restrict idx = pos1_.data();
@@ -217,15 +216,15 @@ void TransposeSlabFwd::reorder() {
             fftbuf_[key[beg]] = acc;
         }
     }
-    timer_.stop(t_calc_);
+    timer_.stop(t_calc_, MPI_COMM_WORLD);
 }
 
 void TransposeSlabFwd::reduce() {
-    timer_.start();
+    timer_.start(MPI_COMM_WORLD);
     if (group_id_ == 0) {
         MPI_Reduce(MPI_IN_PLACE, fftbuf_, fft_buf_size_, MPI_DOUBLE, MPI_SUM, 0, reduce_comm_);
     } else {
         MPI_Reduce(fftbuf_, nullptr, fft_buf_size_, MPI_DOUBLE, MPI_SUM, 0, reduce_comm_);
     }
-    timer_.stop(t_comm_);
+    timer_.stop(t_comm_, MPI_COMM_WORLD);
 }

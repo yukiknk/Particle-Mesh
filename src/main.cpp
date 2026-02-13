@@ -39,7 +39,7 @@ int main(int argc, char** argv) {
     Interpolater interpolater(grid, particle, mpi_env, buffer_manager, timer); //Interpolater初期化
     
     //バッファ確保
-    buffer_manager.allocate();
+    buffer_manager.allocate(mpi_env.world_rank());
     fft.create_plan();
 
     //ループのセットアップ

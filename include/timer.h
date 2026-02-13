@@ -27,16 +27,17 @@ public:
         return now_time_ - told;
     }
 
-    void start() {
+    void start(MPI_Comm comm) {
+        MPI_Barrier(comm);
         get_time();
     }
 
-    void stop(int id) {
+    void stop(int id, MPI_Comm comm) {
         double elapsed = get_time();
         
         if (iteration_ >= warm_up_) {
             double global_max = 0.0;
-            MPI_Reduce(&elapsed, &global_max, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+            MPI_Reduce(&elapsed, &global_max, 1, MPI_DOUBLE, MPI_MAX, 0, comm);
             
             if (world_rank_ == 0) {
                 times_[id] += global_max;

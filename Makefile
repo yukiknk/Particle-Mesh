@@ -14,7 +14,8 @@ TARGET = pm_fftw
 SRCS = src/main.cpp \
        src/interpolater.cpp \
        src/fft/fft_fftw.cpp \
-       src/transpose/transpose_slab_fwd.cpp
+       src/transpose/transpose_slab_fwd.cpp \
+       src/transpose/transpose_slab_bwd.cpp
 
 # オブジェクトファイル（src/以下の構造を維持）
 OBJS = $(SRCS:.cpp=.o)

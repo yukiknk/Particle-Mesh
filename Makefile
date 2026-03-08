@@ -34,8 +34,12 @@ $(TARGET): $(OBJS)
 clean:
 	rm -f $(OBJS) $(TARGET)
 
+# デバッグビルド（デバッグ出力を有効化）
+debug: CXXFLAGS += -DDEBUG_MODE
+debug: $(TARGET)
+
 # コピー（必要に応じてパスを変更）
 copy:
 	cp ./$(TARGET) /vol0005/mdt0/data/hp230173/u13308/All/
 
-.PHONY: all clean copy
+.PHONY: all clean copy debug

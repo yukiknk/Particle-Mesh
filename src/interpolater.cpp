@@ -1,4 +1,5 @@
 #include "interpolater.h"
+#include "debug.h"
 
 Interpolater::Interpolater(const Grid& grid, Particle& particle, const MPIEnv& mpi, BufferManager& buffer, Timer& timer)
     : timer_(timer),
@@ -20,7 +21,7 @@ Interpolater::Interpolater(const Grid& grid, Particle& particle, const MPIEnv& m
     buffer.register_buffer(buf_, 0);
     buffer.update_max_size(total_size);
     if(world_rank_ == 0) {
-        std::cout << "Set Interpolater" << std::endl;
+        DEBUG_LOG("Set Interpolater");
     }
 }
 
@@ -93,7 +94,7 @@ void Interpolater::deposit() {
     }
     timer_.stop(t_deposit_, MPI_COMM_WORLD);
     if(world_rank_ == 0) {
-        std::cout << "Deposit" << std::endl;
+        DEBUG_LOG("Deposit");
     }
 }
 

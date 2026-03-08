@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <mpi.h>
+#include "debug.h"
 
 class BufferManager {
 public:
@@ -41,7 +42,7 @@ public:
         }
 
         if(world_rank == 0) {
-            std::cout << "BufferManager: allocated " << max_size_ << "* sizeof(double)" << std::endl;
+            DEBUG_LOG("BufferManager: allocated " + std::to_string(max_size_) + "* sizeof(double)");
         }
     }
 

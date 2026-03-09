@@ -8,6 +8,7 @@
 #include "particle/particle.h"
 #include "fft/fft.h"
 #include "transpose/transpose_slab_fwd.h"
+#include "transpose/transpose_slab_bwd.h"
 #include "interpolater.h"
 #include "timer.h"
 
@@ -34,7 +35,7 @@ int main(int argc, char** argv) {
     Grid grid(Ng, mpi_env); //Grid初期化
     FFT fft(Ng, Omega0, mpi_env, buffer_manager, timer); //FFT初期化
     TransposeSlabFwd transpose_fwd(grid, fft, mpi_env, buffer_manager, timer); //Transpose_FWD初期化
-    //Transpose_BWD初期化
+    TransposeSlabBwd transpose_bwd(grid, fft, mpi_env, buffer_manager, timer); //Transpose_BWD初期化
     Particle particle(Np, grid, mpi_env); //Particle初期化
     Interpolater interpolater(grid, particle, mpi_env, buffer_manager, timer); //Interpolater初期化
     
@@ -58,9 +59,7 @@ int main(int argc, char** argv) {
         fft.apply_green(a); //Green
         fft.backward(); //IFFT
 
-        //pack
-        //alltoallv
-        //unpack
+        transpose_bwd.execute();
 
         //update particle
     }

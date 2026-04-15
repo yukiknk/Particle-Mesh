@@ -183,18 +183,14 @@ void TransposeSlabFwd::reorder() {
     const size_t* __restrict key = pos0_.data();
 
     if (group_id_ == 0) {
-        // 宇宙の平均密度を1.0とする。密度摂動を求めるため-1.0で初期化
-        #pragma omp parallel for
-        for (size_t i = 0; i < fft_buf_size_; ++i) {
-            fftbuf_[i] = -1.0;
-        }
+        std::memset(fftbuf_, 0, fft_buf_size_ * sizeof(double));
         
         #pragma omp parallel for schedule(guided)
         for (size_t s = 0; s < S; ++s) {
             const size_t beg = seg[s];
             const size_t end = seg[s + 1];
             
-            double acc = -1.0;
+            double acc = 0.0;
             for (size_t k = beg; k < end; ++k) {
                 acc += recvbuf_[idx[k]];
             }

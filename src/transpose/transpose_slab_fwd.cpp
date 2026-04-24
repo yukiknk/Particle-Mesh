@@ -2,6 +2,7 @@
 #include <omp.h>
 #include <cstring>
 #include "debug.h"
+#include "grouping.h"
 
 TransposeSlabFwd::TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer, Timer& timer)
     : timer_(timer),
@@ -17,11 +18,11 @@ TransposeSlabFwd::TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEn
     t_comm_ = timer_.register_timer("TransposeFwd Comm");
     t_calc_ = timer_.register_timer("TransposeFwd Calc");
 
-    // グループ分け
-    group_size_ = (world_size_ <= Ng_) ? world_size_ : Ng_;
-    num_groups_ = world_size_ / group_size_;
-    group_id_ = world_rank_ / group_size_;
-    local_rank_ = world_rank_ % group_size_;
+    Grouping grouping(Ng_, mpi);
+    group_size_ = grouping.group_size;
+    num_groups_ = grouping.num_groups;
+    group_id_ = grouping.group_id;
+    local_rank_ = grouping.local_rank;
     
     // グループ内コミュニケータ作成
     MPI_Comm_split(MPI_COMM_WORLD, group_id_, local_rank_, &group_comm_);

@@ -17,9 +17,9 @@ public:
     FFT& operator=(FFT&&) = delete;
 
     void create_plan();
-    void forward();
-    void backward();
-    void apply_green(double a);
+    __attribute__((aligned(256))) void forward();
+    __attribute__((aligned(256))) void backward();
+    __attribute__((aligned(256))) void apply_green(double a);
 
     int color() const { return color_; }
     int stride() const { return stride_; }

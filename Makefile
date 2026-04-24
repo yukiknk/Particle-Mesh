@@ -13,6 +13,7 @@ TARGET = pm_fftw
 # ソースファイル
 SRCS = src/main.cpp \
        src/interpolater.cpp \
+       src/grouping.cpp \
        src/fft/fft_fftw.cpp \
        src/transpose/transpose_slab_fwd.cpp \
        src/transpose/transpose_slab_bwd.cpp

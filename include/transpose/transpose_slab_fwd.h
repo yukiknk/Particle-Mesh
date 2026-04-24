@@ -21,12 +21,12 @@ public:
     TransposeSlabFwd(TransposeSlabFwd&&) = delete;
     TransposeSlabFwd& operator=(TransposeSlabFwd&&) = delete;
 
-    void execute();
+    __attribute__((aligned(256))) void execute();
 
 private:
-    void alltoallv();
-    void reorder();
-    void reduce();
+    __attribute__((aligned(256))) void alltoallv();
+    __attribute__((aligned(256))) void reorder();
+    __attribute__((aligned(256))) void reduce();
 
     Timer& timer_;
     int t_comm_;

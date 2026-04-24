@@ -4,6 +4,7 @@
 #include <iostream>
 #include "debug.h"
 #include <omp.h>
+#include "grouping.h"
 
 FFT::FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer) : timer_(timer), world_rank_(mpi.world_rank()), Ng_(Ng), stride_(Ng + 2) {
     t_fft_ = timer_.register_timer("FFT");
@@ -17,8 +18,10 @@ FFT::FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer&
     int rank = mpi.world_rank();
     int size = mpi.world_size();
 
-    color_ = rank / Ng_;
-    int local_rank = rank % Ng_;
+    Grouping grouping(Ng_, mpi);
+    color_ = grouping.color;
+    int local_rank = grouping.local_rank;
+
     MPI_Comm_split(MPI_COMM_WORLD, color_, local_rank, &comm_);
 
     local_alloc_ = fftw_mpi_local_size_3d_transposed(

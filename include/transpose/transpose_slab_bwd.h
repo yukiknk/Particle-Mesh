@@ -26,12 +26,12 @@ public:
     TransposeSlabBwd(TransposeSlabBwd&&) = delete;
     TransposeSlabBwd& operator=(TransposeSlabBwd&&) = delete;
 
-    void execute();
+    __attribute__((aligned(256))) void execute();
 
 private:
-    void broadcast();   // num_groups > 1 の場合: group_id==0 から他グループへ fftbuf_ を配布
-    void reorder();     // fftbuf_ から sendbuf_ へデータを並べ替え（fwd の reorder の逆方向）
-    void alltoallv();   // グループ内 Alltoallv: sendbuf_ → recvbuf_ へ転送
+    __attribute__((aligned(256))) void broadcast();   // num_groups > 1 の場合: group_id==0 から他グループへ fftbuf_ を配布
+    __attribute__((aligned(256))) void reorder();     // fftbuf_ から sendbuf_ へデータを並べ替え（fwd の reorder の逆方向）
+    __attribute__((aligned(256))) void alltoallv();   // グループ内 Alltoallv: sendbuf_ → recvbuf_ へ転送
 
     Timer& timer_;
     int t_comm_;

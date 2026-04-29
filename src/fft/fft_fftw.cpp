@@ -6,7 +6,7 @@
 #include <omp.h>
 #include "grouping.h"
 
-FFT::FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer) : timer_(timer), world_rank_(mpi.world_rank()), Ng_(Ng), stride_(Ng + 2) {
+FFT::FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method) : timer_(timer), world_rank_(mpi.world_rank()), Ng_(Ng), stride_(Ng + 2) {
     t_fft_ = timer_.register_timer("FFT");
     t_ifft_ = timer_.register_timer("IFFT");
     t_green_ = timer_.register_timer("Green");
@@ -18,7 +18,7 @@ FFT::FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer&
     int rank = mpi.world_rank();
     int size = mpi.world_size();
 
-    Grouping grouping(Ng_, mpi);
+    Grouping grouping(Ng_, mpi, method);
     color_ = grouping.color;
     int local_rank = grouping.local_rank;
 

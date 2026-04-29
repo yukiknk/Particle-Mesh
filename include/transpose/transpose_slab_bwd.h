@@ -18,7 +18,7 @@
 
 class TransposeSlabBwd {
 public:
-    TransposeSlabBwd(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer, Timer& timer);
+    TransposeSlabBwd(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method);
     ~TransposeSlabBwd();
 
     TransposeSlabBwd(const TransposeSlabBwd&) = delete;

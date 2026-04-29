@@ -8,7 +8,7 @@
 
 class FFT {
 public:
-    FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer);
+    FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method);
     ~FFT();
     
     FFT(const FFT&) = delete;

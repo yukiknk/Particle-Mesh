@@ -13,7 +13,7 @@
 
 class TransposeSlabFwd {
 public:
-    TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer, Timer& timer);
+    TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method);
     ~TransposeSlabFwd();
     
     TransposeSlabFwd(const TransposeSlabFwd&) = delete;

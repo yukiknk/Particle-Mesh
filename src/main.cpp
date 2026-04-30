@@ -64,7 +64,7 @@ int main(int argc, char** argv) {
 
             transpose_bwd.execute();
 
-            //update particle
+            interpolater.gather(a); //update particle
         }
 
         //時間出力

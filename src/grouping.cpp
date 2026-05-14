@@ -6,7 +6,7 @@ Grouping::Grouping(int Ng, const MPIEnv& mpi, int method) {
 
     group_size = (world_size <= Ng) ? world_size : Ng;
     num_groups = world_size / group_size;
-
+    
     switch (method) {
     case 1: // Sequential（連番方式）
         group_id = world_rank / group_size;

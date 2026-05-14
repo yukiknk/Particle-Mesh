@@ -18,7 +18,7 @@ TransposeSlabFwd::TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEn
     t_comm_ = timer_.register_timer("TransposeFwd Comm");
     t_calc_ = timer_.register_timer("TransposeFwd Calc");
 
-    Grouping grouping(Ng_, mpi, method);
+    Grouping grouping(fft.grouping_ng(), mpi, method);
     group_size_ = grouping.group_size;
     num_groups_ = grouping.num_groups;
     group_id_ = grouping.group_id;

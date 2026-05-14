@@ -1,21 +1,28 @@
 #pragma once
 #include <mpi.h>
-#include <fftw3-mpi.h>
+#include <vector>
+#include <complex>
+#include <cstddef>
 
 #include "mpi_env.h"
 #include "buffer_manager.h"
 #include "timer.h"
 #include "fft.h"
 
-class FFT_FFTW : public FFT {
+extern "C" {
+    void pzdfft3d_(double* A, double* B, int* NX, int* NY, int* NZ, int* ICOMM, int* ME, int* NPU, int* IOPT);
+    void pdzfft3d_(double* A, double* B, int* NX, int* NY, int* NZ, int* ICOMM, int* ME, int* NPU, int* IOPT);
+}
+
+class FFT_FFTE1 : public FFT {
 public:
-    FFT_FFTW(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method);
-    ~FFT_FFTW() override;
+    FFT_FFTE1(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method);
+    ~FFT_FFTE1() override;
     
-    FFT_FFTW(const FFT_FFTW&) = delete;
-    FFT_FFTW& operator=(const FFT_FFTW&) = delete;
-    FFT_FFTW(FFT_FFTW&&) = delete;
-    FFT_FFTW& operator=(FFT_FFTW&&) = delete;
+    FFT_FFTE1(const FFT_FFTE1&) = delete;
+    FFT_FFTE1& operator=(const FFT_FFTE1&) = delete;
+    FFT_FFTE1(FFT_FFTE1&&) = delete;
+    FFT_FFTE1& operator=(FFT_FFTE1&&) = delete;
 
     void create_plan() override;
     __attribute__((aligned(256))) void forward() override;
@@ -28,7 +35,7 @@ public:
     ptrdiff_t local_0_start() const override { return local_0_start_; }
     ptrdiff_t local_alloc() const override { return local_alloc_; }
     
-    int grouping_ng() const override { return Ng_; }
+    int grouping_ng() const override { return Ng_ / 2; }
 
 private:
     Timer& timer_;
@@ -40,6 +47,11 @@ private:
     int color_;
     int stride_;
     int world_rank_;
+    
+    int rank_;
+    int size_;
+    MPI_Fint fortran_Comm_;
+    
     MPI_Comm comm_ = MPI_COMM_NULL;
     
     ptrdiff_t local_alloc_ = 0;
@@ -49,9 +61,7 @@ private:
     ptrdiff_t local_1_start_ = 0;
     
     double* real_ = nullptr;
-    fftw_complex* complex_ = nullptr;
+    double* calc_ = nullptr;
+    std::complex<double>* complex_ = nullptr;
     double* green_ = nullptr;
-    
-    fftw_plan forward_ = nullptr;
-    fftw_plan backward_ = nullptr;
 };

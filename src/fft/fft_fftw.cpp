@@ -6,7 +6,7 @@
 #include <omp.h>
 #include "grouping.h"
 
-FFT::FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method) : timer_(timer), world_rank_(mpi.world_rank()), Ng_(Ng), stride_(Ng + 2) {
+FFT_FFTW::FFT_FFTW(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method) : timer_(timer), world_rank_(mpi.world_rank()), Ng_(Ng), stride_(Ng + 2) {
     t_fft_ = timer_.register_timer("FFT");
     t_ifft_ = timer_.register_timer("IFFT");
     t_green_ = timer_.register_timer("Green");
@@ -71,7 +71,7 @@ FFT::FFT(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer&
     }
 }
 
-void FFT::create_plan() {
+void FFT_FFTW::create_plan() {
     if (color_ == 0) {
         forward_ = fftw_mpi_plan_dft_r2c_3d(
             Ng_, Ng_, Ng_, real_, complex_, comm_,
@@ -84,7 +84,7 @@ void FFT::create_plan() {
     }
 }
 
-FFT::~FFT() {
+FFT_FFTW::~FFT_FFTW() {
     if (color_ == 0) {
         if (forward_) fftw_destroy_plan(forward_);
         if (backward_) fftw_destroy_plan(backward_);
@@ -93,7 +93,7 @@ FFT::~FFT() {
     if (comm_ != MPI_COMM_NULL) MPI_Comm_free(&comm_);
 }
 
-void FFT::forward() {
+void FFT_FFTW::forward() {
     if (color_ == 0) {
         timer_.start(comm_);
         fftw_mpi_execute_dft_r2c(forward_, real_, complex_);
@@ -104,7 +104,7 @@ void FFT::forward() {
     }
 }
 
-void FFT::backward() {
+void FFT_FFTW::backward() {
     if (color_ == 0) {
         timer_.start(comm_);
         fftw_mpi_execute_dft_c2r(backward_, complex_, real_);
@@ -115,7 +115,7 @@ void FFT::backward() {
     }
 }
 
-void FFT::apply_green(double a) {
+void FFT_FFTW::apply_green(double a) {
     if (color_ != 0) return;
 
     timer_.start(comm_);

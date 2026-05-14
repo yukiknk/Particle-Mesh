@@ -1,25 +1,36 @@
 # コンパイラを指定 (MPI用)
 CXX = mpiFCCpx
+FC = mpifrtpx
 
 # コンパイルオプションを指定
 CXXFLAGS = -Kfast,openmp -std=c++17 -I./include
+FFLAGS = -Kfast,openmp
 
-# FFTWライブラリへのリンクオプション
-LIBS = -lfftw3_mpi -lfftw3_omp -lfftw3_threads -lfftw3 -lm
+# FFTWおよびFFTE(MPI)ライブラリへのリンクオプション
+LIBS = -lfftw3_mpi -lfftw3_omp -lfftw3_threads -lfftw3 -lm -lmpi_mpifh -lmpi
 
 # ターゲットの実行ファイル名
-TARGET = pm_fftw
+TARGET = pm_fft_test
 
 # ソースファイル
 SRCS = src/main.cpp \
        src/interpolater.cpp \
        src/fft/fft_fftw.cpp \
+       src/fft/fft_ffte1.cpp \
        src/transpose/transpose_slab_fwd.cpp \
        src/transpose/transpose_slab_bwd.cpp \
        src/grouping.cpp
 
+FSRCS = src/fft/factor.f \
+        src/fft/fft235.f \
+        src/fft/kernel.f \
+        src/fft/pdzfft3d.f \
+        src/fft/pzdfft3d.f
+
 # オブジェクトファイル（src/以下の構造を維持）
-OBJS = $(SRCS:.cpp=.o)
+CPP_OBJS = $(SRCS:.cpp=.o)
+F_OBJS = $(FSRCS:.f=.o)
+OBJS = $(CPP_OBJS) $(F_OBJS)
 
 # デフォルトターゲット
 all: $(TARGET)
@@ -31,6 +42,9 @@ $(TARGET): $(OBJS)
 # ソースファイルからオブジェクトファイルを作成
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+%.o: %.f
+	$(FC) $(FFLAGS) -c $< -o $@
 
 # クリーンアップ
 clean:

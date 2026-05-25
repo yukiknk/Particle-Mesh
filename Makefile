@@ -15,17 +15,22 @@ TARGET = pm_fft_test
 # ソースファイル
 SRCS = src/main.cpp \
        src/interpolater.cpp \
+       src/grouping.cpp \
        src/fft/fft_fftw.cpp \
        src/fft/fft_ffte1.cpp \
-       src/transpose/transpose_slab_fwd.cpp \
-       src/transpose/transpose_slab_bwd.cpp \
-       src/grouping.cpp
+       src/fft/fft_ffte2.cpp \
+       src/transpose/transpose_fwd_slab.cpp \
+       src/transpose/transpose_bwd_slab.cpp \
+       src/transpose/transpose_fwd_pencil.cpp \
+       src/transpose/transpose_bwd_pencil.cpp
 
 FSRCS = src/fft/factor.f \
         src/fft/fft235.f \
         src/fft/kernel.f \
         src/fft/pdzfft3d.f \
-        src/fft/pzdfft3d.f
+        src/fft/pzdfft3d.f \
+        src/fft/pdzfft3dv.f \
+        src/fft/pzdfft3dv.f
 
 # オブジェクトファイル（src/以下の構造を維持）
 CPP_OBJS = $(SRCS:.cpp=.o)

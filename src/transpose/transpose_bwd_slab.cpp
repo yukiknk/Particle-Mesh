@@ -1,10 +1,10 @@
-#include "transpose/transpose_slab_bwd.h"
+#include "transpose/transpose_bwd_slab.h"
 #include <omp.h>
 #include <cstring>
 #include "debug.h"
 #include "grouping.h"
 
-TransposeSlabBwd::TransposeSlabBwd(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method)
+TransposeBwdSlab::TransposeBwdSlab(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method)
     : timer_(timer),
       world_size_(mpi.world_size()),
       world_rank_(mpi.world_rank()),
@@ -180,12 +180,12 @@ TransposeSlabBwd::TransposeSlabBwd(const Grid& grid, const FFT& fft, const MPIEn
     }
 }
 
-TransposeSlabBwd::~TransposeSlabBwd() {
+TransposeBwdSlab::~TransposeBwdSlab() {
     if (group_comm_ != MPI_COMM_NULL) MPI_Comm_free(&group_comm_);
     if (bcast_comm_ != MPI_COMM_NULL) MPI_Comm_free(&bcast_comm_);
 }
 
-void TransposeSlabBwd::execute() {
+void TransposeBwdSlab::execute() {
     if (num_groups_ > 1) {
         broadcast();
         if (world_rank_ == 0) {
@@ -202,13 +202,13 @@ void TransposeSlabBwd::execute() {
     }
 }
 
-void TransposeSlabBwd::broadcast() {
+void TransposeBwdSlab::broadcast() {
     timer_.start(MPI_COMM_WORLD);
     MPI_Bcast(fftbuf_, static_cast<int>(fft_buf_size_), MPI_DOUBLE, 0, bcast_comm_);
     timer_.stop(t_comm_, MPI_COMM_WORLD);
 }
 
-void TransposeSlabBwd::reorder() {
+void TransposeBwdSlab::reorder() {
     // fwd の reorder() の逆方向: fftbuf_ → sendbuf_ へデータを並べ替え
     timer_.start(MPI_COMM_WORLD);
 
@@ -223,7 +223,7 @@ void TransposeSlabBwd::reorder() {
     timer_.stop(t_calc_, MPI_COMM_WORLD);
 }
 
-void TransposeSlabBwd::alltoallv() {
+void TransposeBwdSlab::alltoallv() {
     timer_.start(MPI_COMM_WORLD);
     MPI_Alltoallv(
         sendbuf_, sendcounts_.data(), sdispls_.data(), MPI_DOUBLE,

@@ -23,25 +23,40 @@ Grouping::Grouping(int Ng, const MPIEnv& mpi, int method) {
             group_id = 0;
             local_rank = world_rank;
         } else {
-            // Gridと同じ3Dトポロジを構築
-            int dims[3] = {0, 0, 0};
-            MPI_Dims_create(world_size, 3, dims);
+            int dims[3]={0,0,0};
+            MPI_Dims_create(world_size,3,dims);
+
+            int gdims[3]={0,0,0};
+            MPI_Dims_create(group_size,3,gdims);
+
             int coords[3];
-            coords[0] = world_rank / (dims[1] * dims[2]);
-            coords[1] = (world_rank / dims[2]) % dims[1];
-            coords[2] = world_rank % dims[2];
+            int rank = mpi.world_rank();
+            coords[0] = rank / (dims[1] * dims[2]);
+            coords[1] = (rank / dims[2]) % dims[1];
+            coords[2] = rank % dims[2];
 
-            // num_groupsをz方向に分割
-            int gdims[3] = {1, 1, num_groups};
+            int group_coords[3];
+            int local_coords[3];
 
-            int lsize[3] = {dims[0] / gdims[0], dims[1] / gdims[1], dims[2] / gdims[2]};
-            int gcoords[3], lcoords[3];
-            for (int d = 0; d < 3; ++d) {
-                gcoords[d] = coords[d] / lsize[d];
-                lcoords[d] = coords[d] % lsize[d];
+            for(int d=0; d<3; ++d){
+                group_coords[d] = coords[d] / gdims[d];
+                local_coords[d] = coords[d] % gdims[d];
             }
-            group_id = gcoords[0] * (gdims[1] * gdims[2]) + gcoords[1] * gdims[2] + gcoords[2];
-            local_rank = lcoords[0] * (lsize[1] * lsize[2]) + lcoords[1] * lsize[2] + lcoords[2];
+
+            int ngroups_dim[3];
+            for(int d=0; d<3; ++d){
+                ngroups_dim[d] = dims[d] / gdims[d];
+            }
+
+            group_id =
+                group_coords[0] * (ngroups_dim[1] * ngroups_dim[2]) +
+                group_coords[1] * ngroups_dim[2] +
+                group_coords[2];
+
+            local_rank =
+                local_coords[0] * (gdims[1] * gdims[2]) +
+                local_coords[1] * gdims[2] +
+                local_coords[2];
         }
         break;
 

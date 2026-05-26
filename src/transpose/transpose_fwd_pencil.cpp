@@ -33,7 +33,7 @@ TransposeFwdPencil::TransposeFwdPencil(const Grid& grid, const FFT& fft, const M
     int x0 = grid.x0;
     int y0 = grid.y0;
 
-    // ---- 通常領域: 自分の (x, y) 担当範囲と各プロセスの pencil 範囲の重なり ----
+    // ---- 通常領域 ----
     for (int r = 0; r < world_size_; ++r) {
         int s0x = l0sx[r];
         int s1x = s0x + ln0x[r];
@@ -54,7 +54,7 @@ TransposeFwdPencil::TransposeFwdPencil(const Grid& grid, const FFT& fft, const M
         }
     }
 
-    // ---- x+ 境界: x 方向のゴースト 1 枚を、x=0 を担当するプロセスに送る ----
+    // ---- x+ 境界 ----
     if (grid.coords[0] == grid.dims[0] - 1) {
         for (int r = 0; r < world_size_; ++r) {
             if (l0sx[r] != 0) continue;
@@ -72,7 +72,7 @@ TransposeFwdPencil::TransposeFwdPencil(const Grid& grid, const FFT& fft, const M
         }
     }
 
-    // ---- y+ 境界: y 方向のゴースト 1 枚を、y=0 を担当するプロセスに送る ----
+    // ---- y+ 境界 ----
     if (grid.coords[1] == grid.dims[1] - 1) {
         for (int r = 0; r < world_size_; ++r) {
             if (l0sy[r] != 0) continue;
@@ -90,7 +90,7 @@ TransposeFwdPencil::TransposeFwdPencil(const Grid& grid, const FFT& fft, const M
         }
     }
 
-    // ---- xy+ 角: 対角のゴースト 1 点(z 方向 1 ライン)を rank 0 に送る ----
+    // ---- xy+ 角 ----
     if (grid.coords[0] == grid.dims[0] - 1 && grid.coords[1] == grid.dims[1] - 1) {
         sendcounts_[0] = nz1_;
         send_src_.push_back((static_cast<size_t>(nx1_) * ny1_ - 1) * nz1_);

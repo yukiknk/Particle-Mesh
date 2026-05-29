@@ -2,6 +2,7 @@
 #include <omp.h>
 #include <cstring>
 #include "debug.h"
+#include "grouping.h"
 
 TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method)
     : timer_(timer),
@@ -17,11 +18,23 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
     t_comm_ = timer_.register_timer("TransposeBwd Comm");
     t_calc_ = timer_.register_timer("TransposeBwd Calc");
 
+    Grouping grouping(Ng_ * Ng_ / 2, mpi, method);
+    group_size_ = grouping.group_size;
+    num_groups_ = grouping.num_groups;
+    group_id_   = grouping.group_id;
+    local_rank_ = grouping.local_rank;
+
+    MPI_Comm_split(MPI_COMM_WORLD, group_id_, local_rank_, &group_comm_);
+
+    if (num_groups_ > 1) {
+        MPI_Comm_split(MPI_COMM_WORLD, local_rank_, group_id_, &broadcast_comm_);
+    }
+
     // 送受信カウント配列の初期化
-    sendcounts_.assign(world_size_, 0);
-    sdispls_.assign(world_size_, 0);
-    recvcounts_.assign(world_size_, 0);
-    rdispls_.assign(world_size_, 0);
+    sendcounts_.assign(group_size_, 0);
+    sdispls_.assign(group_size_, 0);
+    recvcounts_.assign(group_size_, 0);
+    rdispls_.assign(group_size_, 0);
 
     // FFT 入力側の 2D 分割情報(自分の担当範囲)
     int local_0_start_x = static_cast<int>(fft.local_0_start_x());
@@ -30,20 +43,20 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
     int local_n0_y = static_cast<int>(fft.local_n0_y());
 
     // 全プロセスの Grid 情報を収集
-    std::vector<int> vnx(world_size_), vny(world_size_), vnz(world_size_);
-    std::vector<int> vx0(world_size_), vy0(world_size_), vz0(world_size_);
-    MPI_Allgather(&grid.x0, 1, MPI_INT, vx0.data(), 1, MPI_INT, MPI_COMM_WORLD);
-    MPI_Allgather(&grid.y0, 1, MPI_INT, vy0.data(), 1, MPI_INT, MPI_COMM_WORLD);
-    MPI_Allgather(&grid.z0, 1, MPI_INT, vz0.data(), 1, MPI_INT, MPI_COMM_WORLD);
-    MPI_Allgather(&grid.nx, 1, MPI_INT, vnx.data(), 1, MPI_INT, MPI_COMM_WORLD);
-    MPI_Allgather(&grid.ny, 1, MPI_INT, vny.data(), 1, MPI_INT, MPI_COMM_WORLD);
-    MPI_Allgather(&grid.nz, 1, MPI_INT, vnz.data(), 1, MPI_INT, MPI_COMM_WORLD);
+    std::vector<int> vnx(group_size_), vny(group_size_), vnz(group_size_);
+    std::vector<int> vx0(group_size_), vy0(group_size_), vz0(group_size_);
+    MPI_Allgather(&grid.x0, 1, MPI_INT, vx0.data(), 1, MPI_INT, group_comm_);
+    MPI_Allgather(&grid.y0, 1, MPI_INT, vy0.data(), 1, MPI_INT, group_comm_);
+    MPI_Allgather(&grid.z0, 1, MPI_INT, vz0.data(), 1, MPI_INT, group_comm_);
+    MPI_Allgather(&grid.nx, 1, MPI_INT, vnx.data(), 1, MPI_INT, group_comm_);
+    MPI_Allgather(&grid.ny, 1, MPI_INT, vny.data(), 1, MPI_INT, group_comm_);
+    MPI_Allgather(&grid.nz, 1, MPI_INT, vnz.data(), 1, MPI_INT, group_comm_);
 
     // ---- 送信量計算 ----
     // 自分の FFT 担当範囲 [local_0_start_*, +local_n0_*) と
     // 各プロセス r の拡張グリッド [vx0[r]-1, vx0[r]+vnx[r]+2)(幅 nx+3, -側1層/+側2層)の重なり。
     // プロセス数が十分多い(3x3x3 以上)前提で、1つの r には1種類のみ送る。
-    for (int r = 0; r < world_size_; ++r) {
+    for (int r = 0; r < group_size_; ++r) {
         int nz3_r = vnz[r] + 3;
 
         // --- x 方向の重なり/折り返し判定 ---
@@ -87,7 +100,7 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
         }
     }
 
-    for (int r = 1; r < world_size_; ++r) {
+    for (int r = 1; r < group_size_; ++r) {
         sdispls_[r] = sdispls_[r - 1] + sendcounts_[r - 1];
     }
 
@@ -95,7 +108,7 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
     pos0_.resize(send_total_);
 
     size_t index = 0;
-    for (int r = 0; r < world_size_; ++r) {
+    for (int r = 0; r < group_size_; ++r) {
         if (sendcounts_[r] == 0) continue;
 
         int nz3_r = vnz[r] + 3;
@@ -150,9 +163,9 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
     }
 
     // ---- 受信カウントを取得 ----
-    MPI_Alltoall(sendcounts_.data(), 1, MPI_INT, recvcounts_.data(), 1, MPI_INT, MPI_COMM_WORLD);
+    MPI_Alltoall(sendcounts_.data(), 1, MPI_INT, recvcounts_.data(), 1, MPI_INT, group_comm_);
 
-    for (int r = 1; r < world_size_; ++r) {
+    for (int r = 1; r < group_size_; ++r) {
         rdispls_[r] = rdispls_[r - 1] + recvcounts_[r - 1];
     }
 
@@ -189,7 +202,7 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
     int y0 = grid.y0;
 
     index = 0;
-    for (int r = 0; r < world_size_; ++r) {
+    for (int r = 0; r < group_size_; ++r) {
         if (recvcounts_[r] == 0) continue;
 
         // x 方向: 自分の拡張グリッド座標(x0-1 起点)での base と幅
@@ -281,6 +294,11 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
 }
 
 void TransposeBwdPencil::execute() {
+    if (num_groups_ > 1) {
+        broadcast();
+        if (world_rank_ == 0) DEBUG_LOG("Broadcast");
+    }
+
     reorder_from_fft();
     if (world_rank_ == 0) DEBUG_LOG("Reorder from FFT");
 
@@ -289,6 +307,12 @@ void TransposeBwdPencil::execute() {
 
     reorder_from_alltoallv();
     if (world_rank_ == 0) DEBUG_LOG("Reorder from Alltoallv");
+}
+
+void TransposeBwdPencil::broadcast() {
+    timer_.start(MPI_COMM_WORLD);
+    MPI_Bcast(fftbuf_, static_cast<int>(fft_buf_size_), MPI_DOUBLE, 0, broadcast_comm_);
+    timer_.stop(t_comm_, MPI_COMM_WORLD);
 }
 
 void TransposeBwdPencil::reorder_from_fft() {
@@ -313,7 +337,7 @@ void TransposeBwdPencil::alltoallv() {
     MPI_Alltoallv(
         sendbuf_, sendcounts_.data(), sdispls_.data(), MPI_DOUBLE,
         recvbuf_, recvcounts_.data(), rdispls_.data(), MPI_DOUBLE,
-        MPI_COMM_WORLD
+        group_comm_
     );
     timer_.stop(t_comm_, MPI_COMM_WORLD);
 }
@@ -337,4 +361,6 @@ void TransposeBwdPencil::reorder_from_alltoallv() {
 }
 
 TransposeBwdPencil::~TransposeBwdPencil() {
+    if (group_comm_ != MPI_COMM_NULL) MPI_Comm_free(&group_comm_);
+    if (broadcast_comm_ != MPI_COMM_NULL) MPI_Comm_free(&broadcast_comm_);
 }

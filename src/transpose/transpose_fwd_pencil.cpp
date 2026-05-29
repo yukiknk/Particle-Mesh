@@ -2,6 +2,7 @@
 #include <omp.h>
 #include <cstring>
 #include "debug.h"
+#include "grouping.h"
 
 TransposeFwdPencil::TransposeFwdPencil(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer,Timer& timer, int method)
     : timer_(timer),
@@ -18,11 +19,24 @@ TransposeFwdPencil::TransposeFwdPencil(const Grid& grid, const FFT& fft, const M
     t_comm_ = timer_.register_timer("TransposeFwd Comm");
     t_calc_ = timer_.register_timer("TransposeFwd Calc");
 
+    // ---- グループ分け(FFTE2 と同じ引数・method で揃える)----
+    Grouping grouping(Ng_ * Ng_ / 2, mpi, method);
+    group_size_ = grouping.group_size;
+    num_groups_ = grouping.num_groups;
+    group_id_   = grouping.group_id;
+    local_rank_ = grouping.local_rank;
+
+    MPI_Comm_split(MPI_COMM_WORLD, group_id_, local_rank_, &group_comm_);
+
+    if (num_groups_ > 1) {
+        MPI_Comm_split(MPI_COMM_WORLD, local_rank_, group_id_, &reduce_comm_);
+    }
+
     // 送受信カウント配列の初期化
-    sendcounts_.assign(world_size_, 0);
-    sdispls_.assign(world_size_, 0);
-    recvcounts_.assign(world_size_, 0);
-    rdispls_.assign(world_size_, 0);
+    sendcounts_.assign(group_size_, 0);
+    sdispls_.assign(group_size_, 0);
+    recvcounts_.assign(group_size_, 0);
+    rdispls_.assign(group_size_, 0);
 
     // FFT 側の Pencil 分割情報を取得
     std::vector<int> ln0x = fft.ln0x();   // 各プロセスの x 方向ローカルサイズ
@@ -34,7 +48,7 @@ TransposeFwdPencil::TransposeFwdPencil(const Grid& grid, const FFT& fft, const M
     int y0 = grid.y0;
 
     // ---- 通常領域 ----
-    for (int r = 0; r < world_size_; ++r) {
+    for (int r = 0; r < group_size_; ++r) {
         int s0x = l0sx[r];
         int s1x = s0x + ln0x[r];
         int s0y = l0sy[r];
@@ -56,7 +70,7 @@ TransposeFwdPencil::TransposeFwdPencil(const Grid& grid, const FFT& fft, const M
 
     // ---- x+ 境界 ----
     if (grid.coords[0] == grid.dims[0] - 1) {
-        for (int r = 0; r < world_size_; ++r) {
+        for (int r = 0; r < group_size_; ++r) {
             if (l0sx[r] != 0) continue;
             int s0y = l0sy[r];
             int s1y = s0y + ln0y[r];
@@ -74,7 +88,7 @@ TransposeFwdPencil::TransposeFwdPencil(const Grid& grid, const FFT& fft, const M
 
     // ---- y+ 境界 ----
     if (grid.coords[1] == grid.dims[1] - 1) {
-        for (int r = 0; r < world_size_; ++r) {
+        for (int r = 0; r < group_size_; ++r) {
             if (l0sy[r] != 0) continue;
             int s0x = l0sx[r];
             int s1x = s0x + ln0x[r];
@@ -99,16 +113,16 @@ TransposeFwdPencil::TransposeFwdPencil(const Grid& grid, const FFT& fft, const M
     }
 
     // ---- sdispls と send_dst を計算 ----
-    for (int r = 0; r < world_size_; ++r) {
+    for (int r = 0; r < group_size_; ++r) {
         if (r > 0) sdispls_[r] = sdispls_[r - 1] + sendcounts_[r - 1];
         if (sendcounts_[r] > 0) send_dst_.push_back(sdispls_[r]);
     }
 
     // ---- 受信カウントを取得 ----
     MPI_Alltoall(sendcounts_.data(), 1, MPI_INT,
-                 recvcounts_.data(), 1, MPI_INT, MPI_COMM_WORLD);
+                 recvcounts_.data(), 1, MPI_INT, group_comm_);
 
-    for (int r = 1; r < world_size_; ++r) {
+    for (int r = 1; r < group_size_; ++r) {
         rdispls_[r] = rdispls_[r - 1] + recvcounts_[r - 1];
     }
 
@@ -135,15 +149,15 @@ TransposeFwdPencil::TransposeFwdPencil(const Grid& grid, const FFT& fft, const M
     pos0_.resize(recv_total);
     pos1_.resize(recv_total);
 
-    // 全プロセスの Grid 情報を収集
-    std::vector<int> vnx(world_size_), vny(world_size_), vnz(world_size_);
-    std::vector<int> vx0(world_size_), vy0(world_size_), vz0(world_size_);
-    MPI_Allgather(&grid.x0, 1, MPI_INT, vx0.data(), 1, MPI_INT, MPI_COMM_WORLD);
-    MPI_Allgather(&grid.y0, 1, MPI_INT, vy0.data(), 1, MPI_INT, MPI_COMM_WORLD);
-    MPI_Allgather(&grid.z0, 1, MPI_INT, vz0.data(), 1, MPI_INT, MPI_COMM_WORLD);
-    MPI_Allgather(&grid.nx, 1, MPI_INT, vnx.data(), 1, MPI_INT, MPI_COMM_WORLD);
-    MPI_Allgather(&grid.ny, 1, MPI_INT, vny.data(), 1, MPI_INT, MPI_COMM_WORLD);
-    MPI_Allgather(&grid.nz, 1, MPI_INT, vnz.data(), 1, MPI_INT, MPI_COMM_WORLD);
+    // ---- グループ内の全プロセスの grid 情報を収集 ----
+    std::vector<int> vnx(group_size_), vny(group_size_), vnz(group_size_);
+    std::vector<int> vx0(group_size_), vy0(group_size_), vz0(group_size_);
+    MPI_Allgather(&grid.x0, 1, MPI_INT, vx0.data(), 1, MPI_INT, group_comm_);
+    MPI_Allgather(&grid.y0, 1, MPI_INT, vy0.data(), 1, MPI_INT, group_comm_);
+    MPI_Allgather(&grid.z0, 1, MPI_INT, vz0.data(), 1, MPI_INT, group_comm_);
+    MPI_Allgather(&grid.nx, 1, MPI_INT, vnx.data(), 1, MPI_INT, group_comm_);
+    MPI_Allgather(&grid.ny, 1, MPI_INT, vny.data(), 1, MPI_INT, group_comm_);
+    MPI_Allgather(&grid.nz, 1, MPI_INT, vnz.data(), 1, MPI_INT, group_comm_);
 
     int local_n0_x      = fft.local_n0_x();
     int local_n0_y      = fft.local_n0_y();
@@ -151,7 +165,7 @@ TransposeFwdPencil::TransposeFwdPencil(const Grid& grid, const FFT& fft, const M
     int local_0_start_y = fft.local_0_start_y();
 
     size_t index = 0;
-    for (int r = 0; r < world_size_; ++r) {
+    for (int r = 0; r < group_size_; ++r) {
         if (recvcounts_[r] == 0) continue;
 
         int nz1_r = vnz[r] + 1;   // 送信元 r の z 方向サイズ(ゴースト込み)
@@ -225,8 +239,8 @@ TransposeFwdPencil::TransposeFwdPencil(const Grid& grid, const FFT& fft, const M
 }
 
 TransposeFwdPencil::~TransposeFwdPencil() {
-    // グループ分けなしのため解放する MPI_Comm はなし
-    // (グループ分け実装時に group_comm_ などの解放を追加)
+    if (group_comm_ != MPI_COMM_NULL) MPI_Comm_free(&group_comm_);
+    if (reduce_comm_ != MPI_COMM_NULL) MPI_Comm_free(&reduce_comm_);
 }
 
 void TransposeFwdPencil::execute() {
@@ -238,6 +252,11 @@ void TransposeFwdPencil::execute() {
 
     reorder_for_fft();
     if (world_rank_ == 0) DEBUG_LOG("Reorder for FFT");
+
+    if (num_groups_ > 1) {
+        reduce();
+        if (world_rank_ == 0) DEBUG_LOG("Reduce");
+    }
 }
 
 void TransposeFwdPencil::reorder_for_alltoallv() {
@@ -271,7 +290,7 @@ void TransposeFwdPencil::alltoallv() {
     MPI_Alltoallv(
         sendbuf_, sendcounts_.data(), sdispls_.data(), MPI_DOUBLE,
         recvbuf_, recvcounts_.data(), rdispls_.data(), MPI_DOUBLE,
-        MPI_COMM_WORLD
+        group_comm_
     );
     timer_.stop(t_comm_, MPI_COMM_WORLD);
 }
@@ -301,4 +320,14 @@ void TransposeFwdPencil::reorder_for_fft() {
     }
 
     timer_.stop(t_calc_, MPI_COMM_WORLD);
+}
+
+void TransposeFwdPencil::reduce() {
+    timer_.start(MPI_COMM_WORLD);
+    if (group_id_ == 0) {
+        MPI_Reduce(MPI_IN_PLACE, fftbuf_, fft_buf_size_, MPI_DOUBLE, MPI_SUM, 0, reduce_comm_);
+    } else {
+        MPI_Reduce(fftbuf_, nullptr, fft_buf_size_, MPI_DOUBLE, MPI_SUM, 0, reduce_comm_);
+    }
+    timer_.stop(t_comm_, MPI_COMM_WORLD);
 }

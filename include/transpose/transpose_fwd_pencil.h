@@ -29,6 +29,7 @@ private:
     __attribute__((aligned(256))) void reorder_for_alltoallv();
     __attribute__((aligned(256))) void alltoallv();
     __attribute__((aligned(256))) void reorder_for_fft();
+    __attribute__((aligned(256))) void reduce();
 
     Timer& timer_;
     int t_comm_;
@@ -38,6 +39,13 @@ private:
     int world_rank_;
     int Ng_;
     int stride_;
+
+    int group_size_;
+    int num_groups_;
+    int group_id_;  
+    int local_rank_;
+    MPI_Comm group_comm_ = MPI_COMM_NULL;
+    MPI_Comm reduce_comm_ = MPI_COMM_NULL;
     
     int nx1_, ny1_, nz1_;
     size_t slice_;   // ny1_ * nz1_ (yz平面サイズ)

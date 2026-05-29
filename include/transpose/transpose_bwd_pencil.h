@@ -26,6 +26,7 @@ public:
     void execute() override;
 
 private:
+    __attribute__((aligned(256))) void broadcast();
     __attribute__((aligned(256))) void reorder_from_fft();
     __attribute__((aligned(256))) void alltoallv();
     __attribute__((aligned(256))) void reorder_from_alltoallv();
@@ -38,6 +39,13 @@ private:
     int world_rank_;
     int Ng_;
     int stride_;
+
+    int group_size_;
+    int num_groups_;
+    int group_id_;  
+    int local_rank_;
+    MPI_Comm group_comm_ = MPI_COMM_NULL;
+    MPI_Comm broadcast_comm_ = MPI_COMM_NULL;
 
     int nx3_, ny3_, nz3_;   // 拡張グリッド(両側ゴースト、中心差分用)
 

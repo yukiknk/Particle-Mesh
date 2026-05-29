@@ -49,42 +49,28 @@ FFT_FFTE2::FFT_FFTE2(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& bu
     fortran_Comm_x_ = MPI_Comm_c2f(comm_x_);
     fortran_Comm_y_ = MPI_Comm_c2f(comm_y_);
 
-    // ---- 入力側の 2D 分割(color==0 のみ。非担当は 0 で送信対象外に)----
-    if (color_ == 0) {
-        local_n0_x_ = static_cast<ptrdiff_t>(Ng_) / NPUX_;
-        local_n0_y_ = static_cast<ptrdiff_t>(Ng_) / NPUY_;
-        local_0_start_x_ = colorx_ * local_n0_x_;
-        local_0_start_y_ = colory_ * local_n0_y_;
-    } else {
-        local_n0_x_ = 0;
-        local_n0_y_ = 0;
-        local_0_start_x_ = -1;
-        local_0_start_y_ = -1;
-    }
+    local_n0_x_ = static_cast<ptrdiff_t>(Ng_) / NPUX_;
+    local_n0_y_ = static_cast<ptrdiff_t>(Ng_) / NPUY_;
+    local_0_start_x_ = colorx_ * local_n0_x_;
+    local_0_start_y_ = colory_ * local_n0_y_;
 
-    if (color_ == 0) {
-        local_n1_y_ = static_cast<ptrdiff_t>(Ng_) / NPUX_;
-        local_n1_z_ = static_cast<ptrdiff_t>(Ng_) / NPUY_ / 2;
-        local_1_start_y_ = colorx_ * local_n1_y_;
-        local_1_start_z_ = colory_ * local_n1_z_;
-        if (colory_ == 0) ++local_n1_z_;
-        else ++local_1_start_z_;
-        local_alloc_ = static_cast<ptrdiff_t>(Ng_) * local_n1_y_ * local_n1_z_;
-    } else {
-        local_alloc_ = 0;
-    }   
+    local_n1_y_ = static_cast<ptrdiff_t>(Ng_) / NPUX_;
+    local_n1_z_ = static_cast<ptrdiff_t>(Ng_) / NPUY_ / 2;
+    local_1_start_y_ = colorx_ * local_n1_y_;
+    local_1_start_z_ = colory_ * local_n1_z_;
+    if (colory_ == 0) ++local_n1_z_;
+    else ++local_1_start_z_;
+    local_alloc_ = static_cast<ptrdiff_t>(Ng_) * local_n1_y_ * local_n1_z_;  
 
     // ---- バッファ登録 ----
     // 実数入力 A(NX, NY/NPUY, NZ/NPUZ) 相当のサイズ。
     // 旧コードの real_size_ = (Ng/NPUY + 2) * Ng * Ng / NPUX に対応
-    if (color_ == 0) {
-        size_t real_size = align_to_64(static_cast<size_t>(Ng_ / NPUY_ + 2) * Ng_ * Ng_ / NPUX_);
-        size_t calc_size = real_size;
+    size_t real_size = align_to_64(static_cast<size_t>(Ng_ / NPUY_ + 2) * Ng_ * Ng_ / NPUX_);
+    size_t calc_size = real_size;
 
-        buffer.register_buffer(real_, 0);
-        buffer.register_buffer(calc_, real_size);
-        buffer.update_max_size(real_size + calc_size);
-    }
+    buffer.register_buffer(real_, 0);
+    buffer.register_buffer(calc_, real_size);
+    buffer.update_max_size(real_size + calc_size);
 
     // ---- Green 関数の確保と構築 ----
     if (color_ == 0) {
@@ -116,22 +102,21 @@ FFT_FFTE2::FFT_FFTE2(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& bu
         }
     }
 
-    // ---- 全プロセスの入力側分割情報を収集(TransposeFwdPencil が参照)----
-    int world_size = mpi.world_size();
-    ln0x_.resize(world_size);
-    ln0y_.resize(world_size);
-    l0sx_.resize(world_size);
-    l0sy_.resize(world_size);
+    // ---- 入力側分割情報をグループ内で収集 ----
+    ln0x_.resize(size);
+    ln0y_.resize(size);
+    l0sx_.resize(size);
+    l0sy_.resize(size);
 
     int ln0x_local = static_cast<int>(local_n0_x_);
     int ln0y_local = static_cast<int>(local_n0_y_);
     int l0sx_local = static_cast<int>(local_0_start_x_);
     int l0sy_local = static_cast<int>(local_0_start_y_);
 
-    MPI_Allgather(&ln0x_local, 1, MPI_INT, ln0x_.data(), 1, MPI_INT, MPI_COMM_WORLD);
-    MPI_Allgather(&ln0y_local, 1, MPI_INT, ln0y_.data(), 1, MPI_INT, MPI_COMM_WORLD);
-    MPI_Allgather(&l0sx_local, 1, MPI_INT, l0sx_.data(), 1, MPI_INT, MPI_COMM_WORLD);
-    MPI_Allgather(&l0sy_local, 1, MPI_INT, l0sy_.data(), 1, MPI_INT, MPI_COMM_WORLD);
+    MPI_Allgather(&ln0x_local, 1, MPI_INT, ln0x_.data(), 1, MPI_INT, comm_);
+    MPI_Allgather(&ln0y_local, 1, MPI_INT, ln0y_.data(), 1, MPI_INT, comm_);
+    MPI_Allgather(&l0sx_local, 1, MPI_INT, l0sx_.data(), 1, MPI_INT, comm_);
+    MPI_Allgather(&l0sy_local, 1, MPI_INT, l0sy_.data(), 1, MPI_INT, comm_);
 
     if (world_rank_ == 0) {
         DEBUG_LOG("Set FFTE2");

@@ -76,13 +76,9 @@ int main(int argc, char** argv) {
     }
 
     int fft_sequence[] = {0, 1, 2};
+    std::vector<int> methods = {2, 3};
 
     for (int fft_type : fft_sequence) {
-        // FFTE2(fft_type==2)は method 概念がないので 1 回のみ
-        std::vector<int> methods = (fft_type == 2)
-                                 ? std::vector<int>{2}
-                                 : std::vector<int>{2, 3};
-
         for (int method : methods) {
             Timer timer(warm_up, loop, mpi_env.world_rank());
             BufferManager buffer_manager;

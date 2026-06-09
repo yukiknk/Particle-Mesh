@@ -1,10 +1,10 @@
-#include "transpose/transpose_slab_fwd.h"
+#include "transpose/transpose_fwd_slab.h"
 #include <omp.h>
 #include <cstring>
 #include "debug.h"
 #include "grouping.h"
 
-TransposeSlabFwd::TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method)
+TransposeFwdSlab::TransposeFwdSlab(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method)
     : timer_(timer),
       world_size_(mpi.world_size()),
       world_rank_(mpi.world_rank()),
@@ -144,12 +144,12 @@ TransposeSlabFwd::TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEn
     }
 }
 
-TransposeSlabFwd::~TransposeSlabFwd() {
+TransposeFwdSlab::~TransposeFwdSlab() {
     if (group_comm_ != MPI_COMM_NULL) MPI_Comm_free(&group_comm_);
     if (reduce_comm_ != MPI_COMM_NULL) MPI_Comm_free(&reduce_comm_);
 }
 
-void TransposeSlabFwd::execute() {
+void TransposeFwdSlab::execute() {
     alltoallv();
     if(world_rank_ == 0) {
         DEBUG_LOG("Alltoallv");
@@ -166,7 +166,7 @@ void TransposeSlabFwd::execute() {
     }
 }
 
-void TransposeSlabFwd::alltoallv() {
+void TransposeFwdSlab::alltoallv() {
     timer_.start(MPI_COMM_WORLD);
     MPI_Alltoallv(
         sendbuf_, sendcounts_.data(), sdispls_.data(), MPI_DOUBLE,
@@ -176,48 +176,30 @@ void TransposeSlabFwd::alltoallv() {
     timer_.stop(t_comm_, MPI_COMM_WORLD);
 }
 
-void TransposeSlabFwd::reorder() {
+void TransposeFwdSlab::reorder() {
     timer_.start(MPI_COMM_WORLD);
     const size_t S = seg_.size() - 1;
     const size_t* __restrict seg = seg_.data();
     const size_t* __restrict idx = pos1_.data();
     const size_t* __restrict key = pos0_.data();
-
-    if (group_id_ == 0) {
-        std::memset(fftbuf_, 0, fft_buf_size_ * sizeof(double));
+    std::memset(fftbuf_, 0, fft_buf_size_ * sizeof(double));
+    
+    #pragma omp parallel for schedule(guided)
+    for (size_t s = 0; s < S; ++s) {
+        const size_t beg = seg[s];
+        const size_t end = seg[s + 1];
         
-        #pragma omp parallel for schedule(guided)
-        for (size_t s = 0; s < S; ++s) {
-            const size_t beg = seg[s];
-            const size_t end = seg[s + 1];
-            
-            double acc = 0.0;
-            for (size_t k = beg; k < end; ++k) {
-                acc += recvbuf_[idx[k]];
-            }
-            
-            fftbuf_[key[beg]] = acc;
+        double acc = 0.0;
+        for (size_t k = beg; k < end; ++k) {
+            acc += recvbuf_[idx[k]];
         }
-    } else {
-        std::memset(fftbuf_, 0, fft_buf_size_ * sizeof(double));
         
-        #pragma omp parallel for schedule(guided)
-        for (size_t s = 0; s < S; ++s) {
-            const size_t beg = seg[s];
-            const size_t end = seg[s + 1];
-            
-            double acc = 0.0;
-            for (size_t k = beg; k < end; ++k) {
-                acc += recvbuf_[idx[k]];
-            }
-            
-            fftbuf_[key[beg]] = acc;
-        }
+        fftbuf_[key[beg]] = acc;
     }
     timer_.stop(t_calc_, MPI_COMM_WORLD);
 }
 
-void TransposeSlabFwd::reduce() {
+void TransposeFwdSlab::reduce() {
     timer_.start(MPI_COMM_WORLD);
     if (group_id_ == 0) {
         MPI_Reduce(MPI_IN_PLACE, fftbuf_, fft_buf_size_, MPI_DOUBLE, MPI_SUM, 0, reduce_comm_);

@@ -10,18 +10,19 @@
 #include "buffer_manager.h"
 #include "timer.h"
 #include "utils.h"
+#include "transpose_fwd.h"
 
-class TransposeSlabFwd {
+class TransposeFwdSlab : public TransposeFwd {
 public:
-    TransposeSlabFwd(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method);
-    ~TransposeSlabFwd();
+    TransposeFwdSlab(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method);
+    ~TransposeFwdSlab() override;
     
-    TransposeSlabFwd(const TransposeSlabFwd&) = delete;
-    TransposeSlabFwd& operator=(const TransposeSlabFwd&) = delete;
-    TransposeSlabFwd(TransposeSlabFwd&&) = delete;
-    TransposeSlabFwd& operator=(TransposeSlabFwd&&) = delete;
+    TransposeFwdSlab(const TransposeFwdSlab&) = delete;
+    TransposeFwdSlab& operator=(const TransposeFwdSlab&) = delete;
+    TransposeFwdSlab(TransposeFwdSlab&&) = delete;
+    TransposeFwdSlab& operator=(TransposeFwdSlab&&) = delete;
 
-    __attribute__((aligned(256))) void execute();
+    __attribute__((aligned(256))) void execute() override;
 
 private:
     __attribute__((aligned(256))) void alltoallv();

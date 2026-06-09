@@ -2,6 +2,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <memory>
+#include <string>
 
 #include "mpi_env.h"
 #include "buffer_manager.h"
@@ -10,13 +11,18 @@
 #include "fft/fft.h"
 #include "fft/fft_fftw.h"
 #include "fft/fft_ffte1.h"
-#include "transpose/transpose_slab_fwd.h"
-#include "transpose/transpose_slab_bwd.h"
+#include "fft/fft_ffte2.h"
+#include "transpose/transpose_fwd.h"
+#include "transpose/transpose_bwd.h"
+#include "transpose/transpose_fwd_slab.h"
+#include "transpose/transpose_bwd_slab.h"
+#include "transpose/transpose_fwd_pencil.h"
+#include "transpose/transpose_bwd_pencil.h"
 #include "interpolater.h"
 #include "timer.h"
+#include "debug.h"
 
 int main(int argc, char** argv) {
-    //MPI初期化
     MPIEnv mpi_env(argc, argv);
 
     if (argc < 3) {
@@ -24,73 +30,107 @@ int main(int argc, char** argv) {
             std::cerr << "Usage: " << argv[0] << " <Ng> <Np>" << std::endl;
         }
         MPI_Abort(MPI_COMM_WORLD, 1);
+        return 1;
     }
     int Ng = std::atoi(argv[1]);
     int Np = std::atoi(argv[2]);
 
     const double Omega0 = 1.0;
-
     const int warm_up = 2;
     const int loop = 10;
     const int all_loop = warm_up + loop;
     double a = 0.9;
 
-    int method_sequence[] = {1, 1, 2, 3};
-    
-    for (int use_ffte = 0; use_ffte <= 1; ++use_ffte) {
-        int seq_idx = 0;
-        for (int method : method_sequence) {
-            seq_idx++;
-            Timer timer(warm_up, loop, mpi_env.world_rank());
+    // warm_up: 最初の1回だけプロセス全体を温める(FFTW で代表)
+    {
+        Timer timer(warm_up, loop, mpi_env.world_rank());
+        int method = 1;
+        BufferManager buffer_manager;
+        Grid grid(Ng, mpi_env);
 
-            BufferManager buffer_manager; //バッファ初期化
-            Grid grid(Ng, mpi_env); //Grid初期化
-            
+        std::unique_ptr<FFT> fft =
+            std::make_unique<FFT_FFTW>(Ng, Omega0, mpi_env, buffer_manager, timer, method);
+        std::unique_ptr<TransposeFwd> transpose_fwd =
+            std::make_unique<TransposeFwdSlab>(grid, *fft, mpi_env, buffer_manager, timer, method);
+        std::unique_ptr<TransposeBwd> transpose_bwd =
+            std::make_unique<TransposeBwdSlab>(grid, *fft, mpi_env, buffer_manager, timer, method);
+
+        Particle particle(Np, grid, mpi_env);
+        Interpolater interpolater(grid, particle, mpi_env, buffer_manager, timer);
+
+        buffer_manager.allocate(mpi_env.world_rank());
+        fft->create_plan();
+
+        for (int i = 0; i < all_loop; i++) {
+            timer.set_iteration(i);
+            if (mpi_env.world_rank() == 0 && i == 0) DEBUG_LOG("Warmup started.");
+
+            interpolater.deposit();
+            transpose_fwd->execute();
+            fft->forward();
+            fft->apply_green(a);
+            fft->backward();
+            transpose_bwd->execute();
+            interpolater.gather(a);
+        }
+    }
+
+    int fft_sequence[] = {0, 1, 2};
+    std::vector<int> methods = {2, 3};
+
+    for (int fft_type : fft_sequence) {
+        for (int method : methods) {
+            Timer timer(warm_up, loop, mpi_env.world_rank());
+            BufferManager buffer_manager;
+            Grid grid(Ng, mpi_env);
+
             std::unique_ptr<FFT> fft;
-            if (use_ffte) {
-                if (mpi_env.world_rank() == 0) std::cout << "[DEBUG] Using FFTE (method=" << method << ")" << std::endl;
-                fft = std::make_unique<FFT_FFTE1>(Ng, Omega0, mpi_env, buffer_manager, timer, method);
-            } else {
-                if (mpi_env.world_rank() == 0) std::cout << "[DEBUG] Using FFTW (method=" << method << ")" << std::endl;
+            std::string fft_name;
+            if (fft_type == 0) {
+                if (mpi_env.world_rank() == 0) DEBUG_LOG("Using FFTW");
                 fft = std::make_unique<FFT_FFTW>(Ng, Omega0, mpi_env, buffer_manager, timer, method);
+                fft_name = "FFTW";
+            } else if (fft_type == 1) {
+                if (mpi_env.world_rank() == 0) DEBUG_LOG("Using FFTE1D");
+                fft = std::make_unique<FFT_FFTE1>(Ng, Omega0, mpi_env, buffer_manager, timer, method);
+                fft_name = "FFTE1D";
+            } else {
+                if (mpi_env.world_rank() == 0) DEBUG_LOG("Using FFTE2D");
+                fft = std::make_unique<FFT_FFTE2>(Ng, Omega0, mpi_env, buffer_manager, timer, method);
+                fft_name = "FFTE2D";
             }
-            
-            TransposeSlabFwd transpose_fwd(grid, *fft, mpi_env, buffer_manager, timer, method); //Transpose_FWD初期化
-            TransposeSlabBwd transpose_bwd(grid, *fft, mpi_env, buffer_manager, timer, method); //Transpose_BWD初期化
-            Particle particle(Np, grid, mpi_env); //Particle初期化
-            Interpolater interpolater(grid, particle, mpi_env, buffer_manager, timer); //Interpolater初期化
-            
-            //バッファ確保
+
+            std::unique_ptr<TransposeFwd> transpose_fwd;
+            std::unique_ptr<TransposeBwd> transpose_bwd;
+            if (fft_type != 2) {
+                transpose_fwd = std::make_unique<TransposeFwdSlab>(grid, *fft, mpi_env, buffer_manager, timer, method);
+                transpose_bwd = std::make_unique<TransposeBwdSlab>(grid, *fft, mpi_env, buffer_manager, timer, method);
+            } else {
+                transpose_fwd = std::make_unique<TransposeFwdPencil>(grid, *fft, mpi_env, buffer_manager, timer, method);
+                transpose_bwd = std::make_unique<TransposeBwdPencil>(grid, *fft, mpi_env, buffer_manager, timer, method);
+            }
+
+            Particle particle(Np, grid, mpi_env);
+            Interpolater interpolater(grid, particle, mpi_env, buffer_manager, timer);
+
             buffer_manager.allocate(mpi_env.world_rank());
             fft->create_plan();
 
-            //メインループ
             for (int i = 0; i < all_loop; i++) {
                 timer.set_iteration(i);
-                
-                if (mpi_env.world_rank() == 0 && i == 0) std::cout << "[DEBUG] Loop started. " << std::endl;
-                
-                interpolater.deposit(); //deposit
+                if (mpi_env.world_rank() == 0 && i == 0) DEBUG_LOG("Loop started.");
 
-                transpose_fwd.execute();
-
-                fft->forward(); //FFT
-                fft->apply_green(a); //Green
-                fft->backward(); //IFFT
-
-                transpose_bwd.execute();
-
-                interpolater.gather(a); //update particle
+                interpolater.deposit();
+                transpose_fwd->execute();
+                fft->forward();
+                fft->apply_green(a);
+                fft->backward();
+                transpose_bwd->execute();
+                interpolater.gather(a);
             }
 
-            //時間出力
             if (mpi_env.world_rank() == 0) {
-                std::string fft_name = use_ffte ? "FFTE" : "FFTW";
-                if (seq_idx == 1) {
-                    std::cout << "\n========== " << fft_name << " Method " << method << " (Warm-up) ==========" << std::endl;
-                } else {
-                    std::cout << "\n========== " << fft_name << " Method " << method << " ==========" << std::endl;
-                }
+                std::cout << "\n========== " << fft_name << " Method " << method << " ==========" << std::endl;
             }
             timer.print();
         }

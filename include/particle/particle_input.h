@@ -1,88 +1,77 @@
 #pragma once
-#include <cstdio>
-#include <cstdlib>
-#include <vector>
-#include <string>
-#include <iostream>
+#include <random>
 #include <mpi.h>
 #include "debug.h"
 #include "mpi_env.h"
 #include "grid/grid.h"
+#include "grid/grid_input.h"
 #include "particle.h"
 
 struct ParticleInput : public Particle {
-    ParticleInput(const std::string& root, int Ng, const Grid& grid, const MPIEnv& mpi)
-        : ParticleInput(open_and_read_header(root, grid), Ng, mpi)   // ヘッダ先読み→委譲
+    // GridInput からファイル分割・サブ分割情報を受け取る
+    ParticleInput(const GridInput& grid, size_t Np3, const MPIEnv& mpi)
+        : ParticleInput(compute_np(grid, Np3, mpi), grid, mpi)
     {}
 
 private:
-    // ヘッダ読み出しの中間結果
-    struct Header {
-        std::FILE* fp;
-        int npart;
-        float hubble;
-    };
+    struct Plan { size_t np; };
 
-    // fid を決めてファイルを開き、ヘッダを読んで npart/hubble を返す（fp は開いたまま）
-    static Header open_and_read_header(const std::string& root, const Grid& grid) {
-        int idx = (grid.coords[0] * grid.dims[1] + grid.coords[1]) * grid.dims[2] + grid.coords[2];
-        int group = idx / 1024;
-        char subdir[8];
-        std::snprintf(subdir, sizeof(subdir), "%04d", group);
-        std::string sep = (root.empty() || root.back() == '/') ? "" : "/";
-        std::string path = root + sep + subdir + "/snap_050." + std::to_string(idx);
+    // ファイル粒子総数（各ファイルを 1 回ずつ集計）から倍率を出し、
+    // 担当領域の粒子数 × 倍率 を sub プロセスで均等割り
+    static Plan compute_np(const GridInput& grid, size_t Np3, const MPIEnv& mpi) {
+        // 各ファイルを 1 回だけ数える：領域内サブインデックスが原点の rank のみ寄与
+        int si0 = grid.coords[0] % grid.sub[0];
+        int si1 = grid.coords[1] % grid.sub[1];
+        int si2 = grid.coords[2] % grid.sub[2];
+        unsigned long long contrib =
+            (si0 == 0 && si1 == 0 && si2 == 0)
+            ? static_cast<unsigned long long>(grid.npart_file) : 0ULL;
 
-        std::FILE* fp = std::fopen(path.c_str(), "rb");
-        if (!fp) {
-            std::cerr << "ParticleInput: cannot open " << path << std::endl;
-            MPI_Abort(MPI_COMM_WORLD, 21);
-        }
+        unsigned long long file_total = 0;
+        MPI_Allreduce(&contrib, &file_total, 1, MPI_UNSIGNED_LONG_LONG,
+                      MPI_SUM, MPI_COMM_WORLD);
 
-        int io_ver = 0, npart = 0, ngas = 0;
-        float omega0, omegab, lambda0, hubble, astart, anow, tnow;
-        double lunit, munit, tunit;
-        std::fread(&io_ver,  sizeof(int),    1, fp);
-        std::fread(&npart,   sizeof(int),    1, fp);
-        std::fread(&ngas,    sizeof(int),    1, fp);
-        std::fread(&omega0,  sizeof(float),  1, fp);
-        std::fread(&omegab,  sizeof(float),  1, fp);
-        std::fread(&lambda0, sizeof(float),  1, fp);
-        std::fread(&hubble,  sizeof(float),  1, fp);
-        std::fread(&astart,  sizeof(float),  1, fp);
-        std::fread(&anow,    sizeof(float),  1, fp);
-        std::fread(&tnow,    sizeof(float),  1, fp);
-        std::fread(&lunit,   sizeof(double), 1, fp);
-        std::fread(&munit,   sizeof(double), 1, fp);
-        std::fread(&tunit,   sizeof(double), 1, fp);
+        // 倍率 = 要求総粒子数 / ファイル粒子総数（割り切れる前提）
+        unsigned long long mult =
+            static_cast<unsigned long long>(Np3) / file_total;
 
-        return Header{fp, npart, hubble};
+        // この領域の総粒子数 = npart_file * mult
+        unsigned long long region_np =
+            static_cast<unsigned long long>(grid.npart_file) * mult;
+
+        // 領域を担当する sub プロセス数で均等割り（割り切れる前提）
+        int nsub = grid.sub[0] * grid.sub[1] * grid.sub[2];
+        size_t np = static_cast<size_t>(region_np / nsub);
+
+        return Plan{np};
     }
 
-    // 委譲先：基底が npart 個ぶん確保 → ボディを読んで埋める
-    ParticleInput(Header h, int Ng, const MPIEnv& mpi)
-        : Particle(static_cast<size_t>(h.npart), static_cast<size_t>(h.npart))   // np_total は後で上書き
+    ParticleInput(Plan plan, const GridInput& grid, const MPIEnv& mpi)
+        : Particle(plan.np, plan.np)   // np_total は後で全体値に上書き
     {
-        const size_t n = static_cast<size_t>(h.npart);
-        std::vector<float> cache_r(3 * n);
-        std::vector<float> cache_v(3 * n);
-        std::fread(cache_r.data(), sizeof(float), cache_r.size(), h.fp);
-        std::fread(cache_v.data(), sizeof(float), cache_v.size(), h.fp);
-        // ID ブロックは読まない
-        std::fclose(h.fp);
+        // 担当グリッド範囲内に一様乱数で生成
+        std::mt19937 rng(12345 + mpi.world_rank());
+        std::uniform_real_distribution<double> dist_x(
+            static_cast<double>(grid.x0), static_cast<double>(grid.x0 + grid.nx));
+        std::uniform_real_distribution<double> dist_y(
+            static_cast<double>(grid.y0), static_cast<double>(grid.y0 + grid.ny));
+        std::uniform_real_distribution<double> dist_z(
+            static_cast<double>(grid.z0), static_cast<double>(grid.z0 + grid.nz));
 
         for (size_t i = 0; i < np; ++i) {
-            x[i]  = static_cast<double>(cache_r[3 * i + 0]) * Ng;
-            y[i]  = static_cast<double>(cache_r[3 * i + 1]) * Ng;
-            z[i]  = static_cast<double>(cache_r[3 * i + 2]) * Ng;
-            vx[i] = static_cast<double>(cache_v[3 * i + 0]) / h.hubble;
-            vy[i] = static_cast<double>(cache_v[3 * i + 1]) / h.hubble;
-            vz[i] = static_cast<double>(cache_v[3 * i + 2]) / h.hubble;
+            x[i]  = dist_x(rng);
+            y[i]  = dist_y(rng);
+            z[i]  = dist_z(rng);
+            vx[i] = 0.0;
+            vy[i] = 0.0;
+            vz[i] = 0.0;
         }
 
-        // np_total = 全ランクの np の総和
+        // np_total = 全 rank の np の総和
         unsigned long long local = static_cast<unsigned long long>(np);
         unsigned long long global = 0;
-        MPI_Allreduce(&local, &global, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(&local, &global, 1, MPI_UNSIGNED_LONG_LONG,
+                      MPI_SUM, MPI_COMM_WORLD);
         np_total = static_cast<size_t>(global);
 
         if (mpi.world_rank() == 0) {

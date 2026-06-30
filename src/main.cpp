@@ -1,6 +1,7 @@
 #include <array>
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -89,9 +90,9 @@ int main(int argc, char** argv) {
     std::set<std::string> ffts    = fft_s.empty()  ? std::set<std::string>{"fftw", "ffte1d", "ffte2d"} : parse_list(fft_s);
     std::set<std::string> methods = meth_s.empty() ? std::set<std::string>{"1", "2", "3"} : parse_list(meth_s);
 
-    // 必須引数チェック
-    if (sources.count("auto") && Np_side <= 0) {
-        if (rank == 0) std::cerr << "source=auto requires --np=N" << std::endl;
+    // 必須引数チェック（auto/input とも Np を使う。input は root も必要）
+    if ((sources.count("auto") || sources.count("input")) && Np_side <= 0) {
+        if (rank == 0) std::cerr << "source=auto/input requires --np=N" << std::endl;
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
     if (sources.count("input") && root_s.empty()) {
@@ -220,7 +221,7 @@ int main(int argc, char** argv) {
     if (sources.count("input")) {
         if (rank == 0) DEBUG_LOG("=== source: input ===");
         GridInput grid(root_s, mpi_env, Ng);
-        ParticleInput particle(root_s, Ng, grid, mpi_env);
+        ParticleInput particle(grid, Np3, mpi_env);
         run_combinations(grid, particle, "input");
     }
 

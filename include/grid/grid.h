@@ -1,7 +1,13 @@
 #pragma once
 
-#if defined(USE_GRID_INPUT)
-#include "grid_input.h"
-#else
-#include "grid_auto.h"  // デフォルト
-#endif
+struct Grid {
+    int Ng;
+    int dims[3];
+    int coords[3];
+    int x0, y0, z0;
+    int nx, ny, nz;
+    int n_local;
+
+protected:
+    Grid() = default;
+};

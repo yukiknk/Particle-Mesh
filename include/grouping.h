@@ -8,5 +8,5 @@ struct Grouping {
     int local_rank;
     int color;
 
-    Grouping(int Ng, const MPIEnv& mpi, int method);
+    Grouping(int cap, const MPIEnv& mpi, int method);
 };

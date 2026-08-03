@@ -1,12 +1,41 @@
 #include "grouping.h"
+#include <iostream>
 
-Grouping::Grouping(int Ng, const MPIEnv& mpi, int method) {
-    int world_size = mpi.world_size();
-    int world_rank = mpi.world_rank();
+namespace {
 
-    group_size = (world_size <= Ng) ? world_size : Ng;
+inline int gcd_i(int a, int b) {
+    while (b) { int t = a % b; a = b; b = t; }
+    return a;
+}
+
+} // namespace
+
+Grouping::Grouping(int cap, const MPIEnv& mpi, int method) {
+    const int world_size = mpi.world_size();
+    const int world_rank = mpi.world_rank();
+
+    if (cap <= 0) {
+        if (world_rank == 0) {
+            std::cerr << "Grouping: invalid cap=" << cap << std::endl;
+        }
+        MPI_Abort(MPI_COMM_WORLD, 30);
+    }
+
+    // group_size = min(world_size の2べき成分, cap)
+    // cap は2べきなので gcd と一致する
+    group_size = gcd_i(world_size, cap);
+
+    if (group_size <= 0 || group_size > cap || world_size % group_size != 0) {
+        if (world_rank == 0) {
+            std::cerr << "Grouping: invalid group_size=" << group_size
+                      << " (world_size=" << world_size
+                      << ", cap=" << cap << ")" << std::endl;
+        }
+        MPI_Abort(MPI_COMM_WORLD, 31);
+    }
+
     num_groups = world_size / group_size;
-    
+
     switch (method) {
     case 1: // Sequential（連番方式）
         group_id = world_rank / group_size;
@@ -29,8 +58,30 @@ Grouping::Grouping(int Ng, const MPIEnv& mpi, int method) {
             int gdims[3]={0,0,0};
             MPI_Dims_create(group_size,3,gdims);
 
+            // method 3 は「各軸で gdims[d] が dims[d] を割り切る」ことを要求する。
+            // world_size が非2べきの場合これは一般に成立しないため、
+            // 黙って壊れる代わりに明示的に落とす。
+            {
+                bool ok = true;
+                long long prod = 1;
+                for (int d = 0; d < 3; ++d) {
+                    if (gdims[d] <= 0 || dims[d] % gdims[d] != 0) { ok = false; break; }
+                    prod *= dims[d] / gdims[d];
+                }
+                if (!ok || prod != static_cast<long long>(num_groups)) {
+                    if (world_rank == 0) {
+                        std::cerr << "Grouping: method=3 is not constructible for world_size="
+                                  << world_size << " group_size=" << group_size
+                                  << " (dims=" << dims[0] << "x" << dims[1] << "x" << dims[2]
+                                  << ", gdims=" << gdims[0] << "x" << gdims[1] << "x" << gdims[2]
+                                  << "). Use method=1 or method=2." << std::endl;
+                    }
+                    MPI_Abort(MPI_COMM_WORLD, 34);
+                }
+            }
+
             int coords[3];
-            int rank = mpi.world_rank();
+            int rank = world_rank;
             coords[0] = rank / (dims[1] * dims[2]);
             coords[1] = (rank / dims[2]) % dims[1];
             coords[2] = rank % dims[2];

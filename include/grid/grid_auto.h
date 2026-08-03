@@ -15,14 +15,19 @@ struct GridAuto : public Grid {
         coords[1] = (rank / dims[2]) % dims[1];
         coords[2] = rank % dims[2];
 
-        nx = Ng / dims[0];
-        ny = Ng / dims[1];
-        nz = Ng / dims[2];
-
-        x0 = coords[0] * nx;
-        y0 = coords[1] * ny;
-        z0 = coords[2] * nz;
+        split(Ng, coords[0], dims[0], x0, nx);
+        split(Ng, coords[1], dims[1], y0, ny);
+        split(Ng, coords[2], dims[2], z0, nz);
 
         n_local = nx * ny * nz;
+    }
+
+    private:
+    // [0, N) を d 個に分割したときの c 番目の区間 [start, start+len)
+    static void split(int N, int c, int d, int& start, int& len) {
+        const long long n = N;
+        start = static_cast<int>(n * c / d);
+        int next = static_cast<int>(n * (c + 1) / d);
+        len = next - start;
     }
 };

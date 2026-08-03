@@ -21,18 +21,25 @@ struct GridInput : public Grid {
     }
 
 private:
-    // base_dims から最小軸を 2 倍する操作を繰り返して eff_dims を作る
-    // （16,16,16 -> 32,16,16 -> 32,32,16 -> 32,32,32 -> ... の順）
     static void make_eff_dims(const int base[3], int nproc, int eff[3]) {
         eff[0] = base[0]; eff[1] = base[1]; eff[2] = base[2];
         long long prod = (long long)eff[0] * eff[1] * eff[2];
-        while (prod < nproc) {
-            // 最小の軸を選ぶ（同点は x->y->z の手前）
+        if (prod <= 0 || nproc % prod != 0) return;   // 呼び出し元でチェック済み
+
+        int rem = (int)(nproc / prod);
+
+        std::vector<int> facs;
+        for (int p = 2; (long long)p * p <= rem; ++p) {
+            while (rem % p == 0) { facs.push_back(p); rem /= p; }
+        }
+        if (rem > 1) facs.push_back(rem);
+        std::sort(facs.begin(), facs.end(), std::greater<int>());
+
+        for (size_t i = 0; i < facs.size(); ++i) {
             int axis = 0;
             if (eff[1] < eff[axis]) axis = 1;
             if (eff[2] < eff[axis]) axis = 2;
-            eff[axis] *= 2;
-            prod *= 2;
+            eff[axis] *= facs[i];
         }
     }
 
@@ -85,6 +92,18 @@ private:
         // eff_dims（実効分割）と各軸の細分数
         int eff[3];
         make_eff_dims(base_dims, nproc, eff);
+
+        // eff の積が nproc に一致しないと coords が破綻する
+        if ((long long)eff[0] * eff[1] * eff[2] != (long long)nproc) {
+            if (mpi.world_rank() == 0) {
+                std::fprintf(stderr,
+                    "GridInput: failed to build eff_dims (%dx%dx%d, prod=%lld) for nproc=%d\n",
+                    eff[0], eff[1], eff[2],
+                    (long long)eff[0] * eff[1] * eff[2], nproc);
+            }
+            MPI_Abort(MPI_COMM_WORLD, 15);
+        }
+
         dims[0] = eff[0]; dims[1] = eff[1]; dims[2] = eff[2];
         sub[0] = eff[0] / base_dims[0];
         sub[1] = eff[1] / base_dims[1];
@@ -114,6 +133,7 @@ private:
         (void)dx;
 
         // 領域を sub で均等分割し、si 番目のサブ範囲を担当
+        // （sub が非2べきでも端数は分配される）
         x0 = X0 + (long long)(X1 - X0) * si[0] / sub[0];
         int x0n = X0 + (long long)(X1 - X0) * (si[0] + 1) / sub[0];
         y0 = Y0 + (long long)(Y1 - Y0) * si[1] / sub[1];
@@ -124,6 +144,15 @@ private:
         ny = y0n - y0;
         nz = z0n - z0;
         n_local = nx * ny * nz;
+
+        // sub が領域の格子幅を超えると幅 0 のブロックができ、
+        // 以降のインデックス構築が破綻する
+        if (nx <= 0 || ny <= 0 || nz <= 0) {
+            std::fprintf(stderr,
+                "GridInput: rank %d got empty block (nx=%d ny=%d nz=%d, sub=%dx%dx%d)\n",
+                rank, nx, ny, nz, sub[0], sub[1], sub[2]);
+            MPI_Abort(MPI_COMM_WORLD, 16);
+        }
 
         // 担当ファイルのヘッダから粒子数を読む（座標は読まない）
         npart_file = read_npart(root, file_idx, mpi);

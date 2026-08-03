@@ -58,6 +58,58 @@ std::string get_opt(int argc, char** argv, const std::string& key) {
     return "";
 }
 
+int gcd_i(int a, int b) {
+    while (b) { int t = a % b; a = b; b = t; }
+    return a;
+}
+
+// 起動時にグループ構成を出力する。
+// 上限値を書き換えて挙動を調べる運用では、どの設定で走ったかがログに
+// 残っていないと結果を突き合わせられないため。
+void print_config(int Ng, int world_size) {
+    int dims[3] = {0, 0, 0};
+    MPI_Dims_create(world_size, 3, dims);
+
+    std::cout << "\n===== Configuration =====" << std::endl;
+    std::cout << "NPROC " << world_size << "  Ng " << Ng
+              << "  dims " << dims[0] << "x" << dims[1] << "x" << dims[2] << std::endl;
+
+    // world_size = 2べき成分 x 奇数成分 に分解
+    int pow2 = 1, odd = world_size;
+    while (odd % 2 == 0) { odd /= 2; pow2 *= 2; }
+    std::cout << "world_size = " << pow2 << " x " << odd
+              << "  (2べき成分 x 奇数成分)" << std::endl;
+    if (world_size > Ng && pow2 % Ng != 0) {
+        std::cout << "  [warn] 2べき成分が Ng の倍数ではありません"
+                  << " (slab のスラブ幅が最小になりません)" << std::endl;
+    }
+
+    struct Entry { const char* name; int cap; bool slab; };
+    const Entry tbl[] = {
+        {"FFTW ", FFT_FFTW::cap_for(Ng),  true},
+        {"FFTE1", FFT_FFTE1::cap_for(Ng), true},
+        {"FFTE2", FFT_FFTE2::cap_for(Ng), false},
+    };
+
+    for (const Entry& e : tbl) {
+        int g = gcd_i(world_size, e.cap);
+        int G = (g > 0) ? world_size / g : 0;
+        std::cout << "  " << e.name
+                  << "  cap=" << e.cap
+                  << "  group=" << g
+                  << " x " << G;
+        if (e.slab) {
+            std::cout << "  (slab width " << (g > 0 ? Ng / g : 0) << ")";
+        } else {
+            int d2[2] = {0, 0};
+            MPI_Dims_create(g, 2, d2);
+            std::cout << "  (NPUX=" << d2[0] << ", NPUY=" << d2[1] << ")";
+        }
+        std::cout << std::endl;
+    }
+    std::cout << "=========================\n" << std::endl;
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -100,6 +152,10 @@ int main(int argc, char** argv) {
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
+    const int world_size = mpi_env.world_size();
+
+    if (rank == 0) print_config(Ng, world_size);
+
     const double Omega0 = 1.0;
     const int warm_up = 2;
     const int loop = 10;
@@ -113,8 +169,6 @@ int main(int argc, char** argv) {
     auto fft_selected = [&](int t) {
         return ffts.count(t == 0 ? "fftw" : (t == 1 ? "ffte1d" : "ffte2d")) > 0;
     };
-
-    const int world_size = mpi_env.world_size();
 
     // 1 サイクル（grid/particle 生成済み）に対し fft×method を回す
     auto run_combinations =

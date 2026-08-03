@@ -8,7 +8,7 @@
 
 struct ParticleAuto : public Particle {
     ParticleAuto(size_t np_total_, const Grid& grid, const MPIEnv& mpi)
-        : Particle(np_total_, np_total_ / mpi.world_size())   // 基底が確保
+        : Particle(np_total_, local_np(np_total_, mpi.world_rank(), mpi.world_size()))   // 基底が確保
     {
         std::mt19937 rng(42 + mpi.world_rank());
         std::uniform_real_distribution<double> dist_x(
@@ -30,5 +30,11 @@ struct ParticleAuto : public Particle {
         if (mpi.world_rank() == 0) {
             DEBUG_LOG("Set Particle");
         }
+    }
+
+    private:
+    static size_t local_np(size_t np_total, int rank, int size) {
+        return np_total * static_cast<size_t>(rank + 1) / static_cast<size_t>(size)
+             - np_total * static_cast<size_t>(rank)     / static_cast<size_t>(size);
     }
 };

@@ -18,6 +18,8 @@ extern "C" {
 
 class FFT_FFTE2 : public FFT {
 public:
+    static int cap_for(int Ng) { return (Ng / 2) * (Ng / 2); }
+
     FFT_FFTE2(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method);
     ~FFT_FFTE2() override;
 
@@ -34,7 +36,8 @@ public:
     int color() const override { return color_; }
     int stride() const override { return stride_; }
     ptrdiff_t local_alloc() const override { return local_alloc_; }
-    int grouping_ng() const override { return Ng_ / 2; }
+
+    int grouping_ng() const override { return cap_for(Ng_); }
 
     // --- Pencil 用インタフェース(TransposeFwdPencil が参照) ---
     std::vector<int> ln0x() const override { return ln0x_; }

@@ -1,6 +1,7 @@
 #pragma once
 #include <random>
 #include <mpi.h>
+#include <iostream>
 #include "debug.h"
 #include "mpi_env.h"
 #include "grid/grid.h"
@@ -17,7 +18,7 @@ private:
     struct Plan { size_t np; };
 
     // ファイル粒子総数（各ファイルを 1 回ずつ集計）から倍率を出し、
-    // 担当領域の粒子数 × 倍率 を sub プロセスで均等割り
+    // 担当領域の粒子数 × 倍率 を sub プロセスで分配
     static Plan compute_np(const GridInput& grid, size_t Np3, const MPIEnv& mpi) {
         // 各ファイルを 1 回だけ数える：領域内サブインデックスが原点の rank のみ寄与
         int si0 = grid.coords[0] % grid.sub[0];
@@ -31,19 +32,42 @@ private:
         MPI_Allreduce(&contrib, &file_total, 1, MPI_UNSIGNED_LONG_LONG,
                       MPI_SUM, MPI_COMM_WORLD);
 
-        // 倍率 = 要求総粒子数 / ファイル粒子総数（割り切れる前提）
+        if (file_total == 0) {
+            if (mpi.world_rank() == 0) {
+                std::cerr << "ParticleInput: file_total is 0" << std::endl;
+            }
+            MPI_Abort(MPI_COMM_WORLD, 22);
+        }
+        
+        // 倍率 = 要求総粒子数 / ファイル粒子総数
         unsigned long long mult =
             static_cast<unsigned long long>(Np3) / file_total;
+
+        if (mult == 0 || static_cast<unsigned long long>(Np3) % file_total != 0) {
+            if (mpi.world_rank() == 0) {
+                std::cerr << "ParticleInput: Np^3(" << Np3
+                          << ") must be a positive multiple of file particle total("
+                          << file_total << ")" << std::endl;
+            }
+            MPI_Abort(MPI_COMM_WORLD, 23);
+        }
 
         // この領域の総粒子数 = npart_file * mult
         unsigned long long region_np =
             static_cast<unsigned long long>(grid.npart_file) * mult;
 
-        // 領域を担当する sub プロセス数で均等割り（割り切れる前提）
+        // 領域を担当する sub プロセス数で分配する。
+        // sub が非2べき（例 3x2x2 = 12）だと割り切れないため、
+        // サブインデックスを線形化して端数を先頭から 1 個ずつ配る。
         int nsub = grid.sub[0] * grid.sub[1] * grid.sub[2];
-        size_t np = static_cast<size_t>(region_np / nsub);
+        int si_lin = (si0 * grid.sub[1] + si1) * grid.sub[2] + si2;
 
-        return Plan{np};
+        unsigned long long lo = region_np * static_cast<unsigned long long>(si_lin)
+                              / static_cast<unsigned long long>(nsub);
+        unsigned long long hi = region_np * static_cast<unsigned long long>(si_lin + 1)
+                              / static_cast<unsigned long long>(nsub);
+
+        return Plan{ static_cast<size_t>(hi - lo) };
     }
 
     ParticleInput(Plan plan, const GridInput& grid, const MPIEnv& mpi)

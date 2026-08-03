@@ -18,8 +18,8 @@ FFT_FFTE2::FFT_FFTE2(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& bu
     t_green_ = timer_.register_timer("Green");
 
     // ---- グループ分け(超過時のみ複数グループ)----
-    // 1グループの最大サイズは Ng^2/2(NPUX<=Ng, NPUY<=Ng/2 の積)
-    Grouping grouping(fft.grouping_ng(), mpi, method);
+    // 1グループの最大サイズは Ng^2/4(NPUX<=Ng/2, NPUY<=Ng/2 の積)
+    Grouping grouping(cap_for(Ng_), mpi, method);
     color_ = grouping.color;
     int local_rank = grouping.local_rank;
 

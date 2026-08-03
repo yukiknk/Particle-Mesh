@@ -9,6 +9,7 @@
 
 class FFT_FFTW : public FFT {
 public:
+    static int cap_for(int Ng) { return Ng; }
     FFT_FFTW(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method);
     ~FFT_FFTW() override;
     
@@ -28,7 +29,7 @@ public:
     ptrdiff_t local_0_start() const override { return local_0_start_; }
     ptrdiff_t local_alloc() const override { return local_alloc_; }
     
-    int grouping_ng() const override { return Ng_; }
+    int grouping_ng() const override { return cap_for(Ng_); }
 
 private:
     Timer& timer_;

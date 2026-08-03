@@ -35,7 +35,8 @@ public:
     ptrdiff_t local_0_start() const override { return local_0_start_; }
     ptrdiff_t local_alloc() const override { return local_alloc_; }
     
-    int grouping_ng() const override { return Ng_ / 2; }
+    static int cap_for(int Ng) { return Ng / 2; }
+    int grouping_ng() const override { return cap_for(Ng_); }
 
 private:
     Timer& timer_;

@@ -6,6 +6,8 @@
 #include <cstdlib>
 #include <cmath>
 #include <iostream>
+#include <algorithm>
+#include <functional>
 #include "grid.h"
 #include "mpi_env.h"
 

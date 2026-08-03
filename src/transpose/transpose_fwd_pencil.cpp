@@ -20,7 +20,7 @@ TransposeFwdPencil::TransposeFwdPencil(const Grid& grid, const FFT& fft, const M
     t_calc_ = timer_.register_timer("TransposeFwd Calc");
 
     // ---- グループ分け(FFTE2 と同じ引数・method で揃える)----
-    Grouping grouping(Ng_ * Ng_ / 2, mpi, method);
+    Grouping grouping(fft.grouping_ng(), mpi, method);
     group_size_ = grouping.group_size;
     num_groups_ = grouping.num_groups;
     group_id_   = grouping.group_id;

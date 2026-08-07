@@ -311,7 +311,11 @@ void TransposeBwdPencil::execute() {
 
 void TransposeBwdPencil::broadcast() {
     timer_.start(MPI_COMM_WORLD);
-    MPI_Bcast(fftbuf_, static_cast<int>(fft_buf_size_), MPI_DOUBLE, 0, broadcast_comm_);
+
+    for (size_t off = 0; off < fft_buf_size_; off += MPI_CHUNK_DOUBLES) {
+        const int n = static_cast<int>(std::min(MPI_CHUNK_DOUBLES, fft_buf_size_ - off));
+        MPI_Bcast(fftbuf_ + off, n, MPI_DOUBLE, 0, broadcast_comm_);
+    }
     timer_.stop(t_comm_, MPI_COMM_WORLD);
 }
 

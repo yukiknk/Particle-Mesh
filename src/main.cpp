@@ -244,7 +244,7 @@ int main(int argc, char** argv) {
         std::unique_ptr<TransposeBwd> transpose_bwd =
             std::make_unique<TransposeBwdSlab>(grid, *fft, mpi_env, buffer_manager, timer, method);
 
-        ParticleAuto particle(static_cast<size_t>(Ng) * Ng * Ng, grid, mpi_env);
+        ParticleAuto particle(Np3, grid, mpi_env);
         Interpolater interpolater(grid, particle, mpi_env, buffer_manager, timer);
 
         buffer_manager.allocate(rank);

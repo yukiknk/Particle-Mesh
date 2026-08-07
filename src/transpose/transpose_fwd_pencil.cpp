@@ -324,10 +324,15 @@ void TransposeFwdPencil::reorder_for_fft() {
 
 void TransposeFwdPencil::reduce() {
     timer_.start(MPI_COMM_WORLD);
-    if (group_id_ == 0) {
-        MPI_Reduce(MPI_IN_PLACE, fftbuf_, fft_buf_size_, MPI_DOUBLE, MPI_SUM, 0, reduce_comm_);
-    } else {
-        MPI_Reduce(fftbuf_, nullptr, fft_buf_size_, MPI_DOUBLE, MPI_SUM, 0, reduce_comm_);
+
+    // count * sizeof(double) が 2^31 を超えないよう分割する
+    for (size_t off = 0; off < fft_buf_size_; off += MPI_CHUNK_DOUBLES) {
+        const int n = static_cast<int>(std::min(MPI_CHUNK_DOUBLES, fft_buf_size_ - off));
+        if (group_id_ == 0) {
+            MPI_Reduce(MPI_IN_PLACE, fftbuf_ + off, n, MPI_DOUBLE, MPI_SUM, 0, reduce_comm_);
+        } else {
+            MPI_Reduce(fftbuf_ + off, nullptr, n, MPI_DOUBLE, MPI_SUM, 0, reduce_comm_);
+        }
     }
     timer_.stop(t_comm_, MPI_COMM_WORLD);
 }

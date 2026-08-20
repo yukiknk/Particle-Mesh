@@ -1,6 +1,8 @@
 #include "fft/fft_fftw.h"
 #include "utils.h"
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include "debug.h"
 #include <omp.h>
@@ -14,6 +16,7 @@ FFT_FFTW::FFT_FFTW(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buff
     fftw_init_threads();
     fftw_mpi_init();
     fftw_plan_with_nthreads(mpi.nthreads());
+    nthreads_ = mpi.nthreads();
 
     int rank = mpi.world_rank();
     int size = mpi.world_size();
@@ -71,8 +74,49 @@ FFT_FFTW::FFT_FFTW(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buff
     }
 }
 
+// ---------------- 変更後 ----------------
 void FFT_FFTW::create_plan() {
-    if (color_ == 0) {
+    if (color_ != 0) return;
+
+    int rank = 0, size = 0;
+    MPI_Comm_rank(comm_, &rank);
+    MPI_Comm_size(comm_, &size);
+
+    const char* dir = std::getenv("PM_WISDOM_DIR");
+    if (dir == nullptr || dir[0] == '\0') dir = ".";
+
+    char fname[512];
+    std::snprintf(fname, sizeof(fname),"%s/fftw_wisdom_Ng%d_p%d_t%d.dat", dir, Ng_, size, nthreads_);
+
+    if (rank == 0) {
+        if (fftw_import_wisdom_from_filename(fname)) {
+            std::cout << "FFTW: wisdom file read   <- " << fname << std::endl;
+        } else {
+            std::cout << "FFTW: wisdom file absent  " << fname << std::endl;
+        }
+    }
+    fftw_mpi_broadcast_wisdom(comm_);
+
+    forward_ = fftw_mpi_plan_dft_r2c_3d(Ng_, Ng_, Ng_, real_, complex_, comm_, FFTW_MEASURE | FFTW_MPI_TRANSPOSED_OUT | FFTW_WISDOM_ONLY);
+    backward_ = fftw_mpi_plan_dft_c2r_3d(Ng_, Ng_, Ng_, complex_, real_, comm_, FFTW_MEASURE | FFTW_MPI_TRANSPOSED_IN | FFTW_WISDOM_ONLY);
+
+    // 判定を全ランクで揃える。1ランクでも欠けたら全員で測り直す
+    // （揃えないと以降の集団通信で食い違う）
+    int local_hit = (forward_ != nullptr && backward_ != nullptr) ? 1 : 0;
+    int all_hit = 0;
+    MPI_Allreduce(&local_hit, &all_hit, 1, MPI_INT, MPI_MIN, comm_);
+
+    if (rank == 0) {
+        std::cout << "FFTW: wisdom "
+                  << (all_hit ? "HIT  (planning skipped)"
+                              : "MISS (running FFTW_MEASURE)")
+                  << std::endl;
+    }
+
+    if (!all_hit) {
+        if (forward_)  { fftw_destroy_plan(forward_);  forward_  = nullptr; }
+        if (backward_) { fftw_destroy_plan(backward_); backward_ = nullptr; }
+
         forward_ = fftw_mpi_plan_dft_r2c_3d(
             Ng_, Ng_, Ng_, real_, complex_, comm_,
             FFTW_MEASURE | FFTW_MPI_TRANSPOSED_OUT
@@ -81,6 +125,16 @@ void FFT_FFTW::create_plan() {
             Ng_, Ng_, Ng_, complex_, real_, comm_,
             FFTW_MEASURE | FFTW_MPI_TRANSPOSED_IN
         );
+
+        // 各ランクが得た知見を集めて保存する
+        fftw_mpi_gather_wisdom(comm_);
+        if (rank == 0) {
+            if (fftw_export_wisdom_to_filename(fname)) {
+                std::cout << "FFTW: wisdom saved       -> " << fname << std::endl;
+            } else {
+                std::cerr << "FFTW: wisdom save FAILED -> " << fname << std::endl;
+            }
+        }
     }
 }
 

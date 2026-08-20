@@ -6,7 +6,7 @@
 #include "debug.h"
 #include "grouping.h"
 
-FFT_FFTE2::FFT_FFTE2(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method)
+FFT_FFTE2::FFT_FFTE2(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method, int cap_override)
     : timer_(timer),
       Ng_(Ng),
       stride_(Ng),
@@ -19,7 +19,8 @@ FFT_FFTE2::FFT_FFTE2(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& bu
 
     // ---- グループ分け(超過時のみ複数グループ)----
     // 1グループの最大サイズは Ng^2/4(NPUX<=Ng/2, NPUY<=Ng/2 の積)
-    Grouping grouping(cap_for(Ng_), mpi, method);
+    cap_ = (cap_override > 0) ? cap_override : cap_for(Ng_);
+    Grouping grouping(cap_, mpi, method);
     color_ = grouping.color;
     int local_rank = grouping.local_rank;
 

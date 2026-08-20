@@ -41,6 +41,7 @@ private:
     int color_;
     int stride_;
     int world_rank_;
+    int nthreads_ = 1;
     MPI_Comm comm_ = MPI_COMM_NULL;
     
     ptrdiff_t local_alloc_ = 0;

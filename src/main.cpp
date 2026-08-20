@@ -66,7 +66,7 @@ int gcd_i(int a, int b) {
 // 起動時にグループ構成を出力する。
 // 上限値を書き換えて挙動を調べる運用では、どの設定で走ったかがログに
 // 残っていないと結果を突き合わせられないため。
-void print_config(int Ng, int world_size) {
+void print_config(int Ng, int world_size, int pgroup) {
     int dims[3] = {0, 0, 0};
     MPI_Dims_create(world_size, 3, dims);
 
@@ -83,12 +83,12 @@ void print_config(int Ng, int world_size) {
         std::cout << "  [warn] 2べき成分が Ng の倍数ではありません"
                   << " (slab のスラブ幅が最小になりません)" << std::endl;
     }
-
+    const int cap2 = (pgroup > 0) ? pgroup : FFT_FFTE2::cap_for(Ng);
     struct Entry { const char* name; int cap; bool slab; };
     const Entry tbl[] = {
         {"FFTW ", FFT_FFTW::cap_for(Ng),  true},
         {"FFTE1", FFT_FFTE1::cap_for(Ng), true},
-        {"FFTE2", FFT_FFTE2::cap_for(Ng), false},
+        {"FFTE2", cap2,                   false},
     };
 
     for (const Entry& e : tbl) {
@@ -123,6 +123,8 @@ int main(int argc, char** argv) {
     std::string src_s  = get_opt(argc, argv, "source");
     std::string fft_s  = get_opt(argc, argv, "fft");
     std::string meth_s = get_opt(argc, argv, "method");
+    std::string pg_s   = get_opt(argc, argv, "pgroup");
+    const int pgroup   = pg_s.empty() ? 0 : std::atoi(pg_s.c_str());
 
     if (ng_s.empty()) {
         if (rank == 0) {
@@ -154,7 +156,7 @@ int main(int argc, char** argv) {
 
     const int world_size = mpi_env.world_size();
 
-    if (rank == 0) print_config(Ng, world_size);
+    if (rank == 0) print_config(Ng, world_size, pgroup);
 
     const double Omega0 = 1.0;
     const int warm_up = 2;
@@ -190,7 +192,7 @@ int main(int argc, char** argv) {
                 else if (fft_type == 1)
                     fft = std::make_unique<FFT_FFTE1>(Ng, Omega0, mpi_env, buffer_manager, timer, method);
                 else
-                    fft = std::make_unique<FFT_FFTE2>(Ng, Omega0, mpi_env, buffer_manager, timer, method);
+                    fft = std::make_unique<FFT_FFTE2>(Ng, Omega0, mpi_env, buffer_manager, timer, method, pgroup);
 
                 std::unique_ptr<TransposeFwd> transpose_fwd;
                 std::unique_ptr<TransposeBwd> transpose_bwd;

@@ -1,10 +1,12 @@
 #include "transpose/transpose_bwd_pencil.h"
 #include <omp.h>
 #include <cstring>
+#include <string>
 #include "debug.h"
 #include "grouping.h"
 
-TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method)
+TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const MPIEnv& mpi,
+                                       BufferManager& buffer, Timer& timer, int method, int relay)
     : timer_(timer),
       world_size_(mpi.world_size()),
       world_rank_(mpi.world_rank()),
@@ -24,17 +26,31 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
     group_id_   = grouping.group_id;
     local_rank_ = grouping.local_rank;
 
-    MPI_Comm_split(MPI_COMM_WORLD, group_id_, local_rank_, &group_comm_);
+    relay_ = (relay != 0);
 
-    if (num_groups_ > 1) {
-        MPI_Comm_split(MPI_COMM_WORLD, local_rank_, group_id_, &broadcast_comm_);
+    // FFT を担当するランクか
+    const bool is_fft = (fft.color() == 0);
+
+    if (relay_) {
+        // 従来: グループ内で Alltoallv、グループ間で Bcast
+        MPI_Comm_split(MPI_COMM_WORLD, group_id_, local_rank_, &group_comm_);
+        if (num_groups_ > 1) {
+            MPI_Comm_split(MPI_COMM_WORLD, local_rank_, group_id_, &broadcast_comm_);
+        }
+        a2a_comm_ = group_comm_;
+        npart_    = group_size_;
+    } else {
+        // リレーメッシュなし: WORLD 全体で 1 回の Alltoallv。Bcast は行わない。
+        // FFT 担当ランクだけが送信側になる。
+        a2a_comm_ = MPI_COMM_WORLD;
+        npart_    = world_size_;
     }
 
     // 送受信カウント配列の初期化
-    sendcounts_.assign(group_size_, 0);
-    sdispls_.assign(group_size_, 0);
-    recvcounts_.assign(group_size_, 0);
-    rdispls_.assign(group_size_, 0);
+    sendcounts_.assign(npart_, 0);
+    sdispls_.assign(npart_, 0);
+    recvcounts_.assign(npart_, 0);
+    rdispls_.assign(npart_, 0);
 
     // FFT 入力側の 2D 分割情報(自分の担当範囲)
     int local_0_start_x = static_cast<int>(fft.local_0_start_x());
@@ -42,65 +58,71 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
     int local_n0_x = static_cast<int>(fft.local_n0_x());
     int local_n0_y = static_cast<int>(fft.local_n0_y());
 
+    // relay ありなら全ランクが自グループ内の送信側。
+    // relay なしなら FFT 担当ランクだけが送信側。
+    const bool i_send = relay_ || is_fft;
+
     // 全プロセスの Grid 情報を収集
-    std::vector<int> vnx(group_size_), vny(group_size_), vnz(group_size_);
-    std::vector<int> vx0(group_size_), vy0(group_size_), vz0(group_size_);
-    MPI_Allgather(&grid.x0, 1, MPI_INT, vx0.data(), 1, MPI_INT, group_comm_);
-    MPI_Allgather(&grid.y0, 1, MPI_INT, vy0.data(), 1, MPI_INT, group_comm_);
-    MPI_Allgather(&grid.z0, 1, MPI_INT, vz0.data(), 1, MPI_INT, group_comm_);
-    MPI_Allgather(&grid.nx, 1, MPI_INT, vnx.data(), 1, MPI_INT, group_comm_);
-    MPI_Allgather(&grid.ny, 1, MPI_INT, vny.data(), 1, MPI_INT, group_comm_);
-    MPI_Allgather(&grid.nz, 1, MPI_INT, vnz.data(), 1, MPI_INT, group_comm_);
+    std::vector<int> vnx(npart_), vny(npart_), vnz(npart_);
+    std::vector<int> vx0(npart_), vy0(npart_), vz0(npart_);
+    MPI_Allgather(&grid.x0, 1, MPI_INT, vx0.data(), 1, MPI_INT, a2a_comm_);
+    MPI_Allgather(&grid.y0, 1, MPI_INT, vy0.data(), 1, MPI_INT, a2a_comm_);
+    MPI_Allgather(&grid.z0, 1, MPI_INT, vz0.data(), 1, MPI_INT, a2a_comm_);
+    MPI_Allgather(&grid.nx, 1, MPI_INT, vnx.data(), 1, MPI_INT, a2a_comm_);
+    MPI_Allgather(&grid.ny, 1, MPI_INT, vny.data(), 1, MPI_INT, a2a_comm_);
+    MPI_Allgather(&grid.nz, 1, MPI_INT, vnz.data(), 1, MPI_INT, a2a_comm_);
 
     // ---- 送信量計算 ----
     // 自分の FFT 担当範囲 [local_0_start_*, +local_n0_*) と
     // 各プロセス r の拡張グリッド [vx0[r]-1, vx0[r]+vnx[r]+2)(幅 nx+3, -側1層/+側2層)の重なり。
     // プロセス数が十分多い(3x3x3 以上)前提で、1つの r には1種類のみ送る。
-    for (int r = 0; r < group_size_; ++r) {
-        int nz3_r = vnz[r] + 3;
+    if (i_send) {
+        for (int r = 0; r < npart_; ++r) {
+            int nz3_r = vnz[r] + 3;
 
-        // --- x 方向の重なり/折り返し判定 ---
-        int wx = 0;
-        // 通常領域
-        int s0x = vx0[r] - 1;
-        int s1x = s0x + vnx[r] + 3;
-        int l0x = std::max(s0x, local_0_start_x);
-        int l1x = std::min(s1x, local_0_start_x + local_n0_x);
-        if (l0x < l1x) {
-            wx = l1x - l0x;
-        }
-        // x+ 折り返し: r が x 末端、自分が x=0 側担当 → +側ゴースト2層が x=0,1 に来る
-        else if ((vx0[r] + vnx[r] == Ng_) && local_0_start_x == 0) {
-            wx = 2;
-        }
-        // x- 折り返し: r が x 始端(vx0[r]==0)、自分が x=Ng 側担当 → -側ゴースト1層が x=Ng-1 に来る
-        else if (vx0[r] == 0 && (local_0_start_x + local_n0_x == Ng_)) {
-            wx = 1;
-        }
+            // --- x 方向の重なり/折り返し判定 ---
+            int wx = 0;
+            // 通常領域
+            int s0x = vx0[r] - 1;
+            int s1x = s0x + vnx[r] + 3;
+            int l0x = std::max(s0x, local_0_start_x);
+            int l1x = std::min(s1x, local_0_start_x + local_n0_x);
+            if (l0x < l1x) {
+                wx = l1x - l0x;
+            }
+            // x+ 折り返し: r が x 末端、自分が x=0 側担当 → +側ゴースト2層が x=0,1 に来る
+            else if ((vx0[r] + vnx[r] == Ng_) && local_0_start_x == 0) {
+                wx = 2;
+            }
+            // x- 折り返し: r が x 始端(vx0[r]==0)、自分が x=Ng 側担当 → -側ゴースト1層が x=Ng-1 に来る
+            else if (vx0[r] == 0 && (local_0_start_x + local_n0_x == Ng_)) {
+                wx = 1;
+            }
 
-        // --- y 方向の重なり/折り返し判定 ---
-        int wy = 0;
-        int s0y = vy0[r] - 1;
-        int s1y = s0y + vny[r] + 3;
-        int l0y = std::max(s0y, local_0_start_y);
-        int l1y = std::min(s1y, local_0_start_y + local_n0_y);
-        if (l0y < l1y) {
-            wy = l1y - l0y;
-        }
-        else if ((vy0[r] + vny[r] == Ng_) && local_0_start_y == 0) {
-            wy = 2;
-        }
-        else if (vy0[r] == 0 && (local_0_start_y + local_n0_y == Ng_)) {
-            wy = 1;
-        }
+            // --- y 方向の重なり/折り返し判定 ---
+            int wy = 0;
+            int s0y = vy0[r] - 1;
+            int s1y = s0y + vny[r] + 3;
+            int l0y = std::max(s0y, local_0_start_y);
+            int l1y = std::min(s1y, local_0_start_y + local_n0_y);
+            if (l0y < l1y) {
+                wy = l1y - l0y;
+            }
+            else if ((vy0[r] + vny[r] == Ng_) && local_0_start_y == 0) {
+                wy = 2;
+            }
+            else if (vy0[r] == 0 && (local_0_start_y + local_n0_y == Ng_)) {
+                wy = 1;
+            }
 
-        // 両方向に重なりがあれば送信
-        if (wx > 0 && wy > 0) {
-            sendcounts_[r] = wx * wy * nz3_r;
+            // 両方向に重なりがあれば送信
+            if (wx > 0 && wy > 0) {
+                sendcounts_[r] = wx * wy * nz3_r;
+            }
         }
     }
 
-    for (int r = 1; r < group_size_; ++r) {
+    for (int r = 1; r < npart_; ++r) {
         sdispls_[r] = sdispls_[r - 1] + sendcounts_[r - 1];
     }
 
@@ -108,27 +130,23 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
     pos0_.resize(send_total_);
 
     size_t index = 0;
-    for (int r = 0; r < group_size_; ++r) {
+    for (int r = 0; r < npart_; ++r) {
         if (sendcounts_[r] == 0) continue;
 
         int nz3_r = vnz[r] + 3;
 
         // --- x 方向: base(fftbuf ローカル座標)と幅 ---
         int xi_base;
-        //int wx;
         int s0x = vx0[r] - 1;
         int s1x = s0x + vnx[r] + 3;
         int l0x = std::max(s0x, local_0_start_x);
         int l1x = std::min(s1x, local_0_start_x + local_n0_x);
         if (l0x < l1x) {
             xi_base = l0x - local_0_start_x;     // 通常領域
-            //wx = l1x - l0x;
         } else if ((vx0[r] + vnx[r] == Ng_) && local_0_start_x == 0) {
             xi_base = 0;                          // x+ 折り返し: x=0,1 を送る
-            //wx = 2;
         } else { // x- 折り返し: x=Ng-1 を送る(自分が x=Ng 側担当)
             xi_base = local_n0_x - 1;
-            //wx = 1;
         }
 
         // --- y 方向 ---
@@ -163,9 +181,9 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
     }
 
     // ---- 受信カウントを取得 ----
-    MPI_Alltoall(sendcounts_.data(), 1, MPI_INT, recvcounts_.data(), 1, MPI_INT, group_comm_);
+    MPI_Alltoall(sendcounts_.data(), 1, MPI_INT, recvcounts_.data(), 1, MPI_INT, a2a_comm_);
 
-    for (int r = 1; r < group_size_; ++r) {
+    for (int r = 1; r < npart_; ++r) {
         rdispls_[r] = rdispls_[r - 1] + recvcounts_[r - 1];
     }
 
@@ -193,32 +211,45 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
     // ---- 受信側 reorder インデックス構築 ----
     pos1_.resize(recv_total_);
 
-    std::vector<int> ln0x = fft.ln0x();
-    std::vector<int> ln0y = fft.ln0y();
-    std::vector<int> l0sx = fft.l0sx();
-    std::vector<int> l0sy = fft.l0sy();
+    // FFT 側 Pencil 分割情報。relay なしのときは WORLD 全体で集め直し、
+    // FFT を担当しないランクは 0 を報告する（そこからは受信しないため実際には参照されない）。
+    std::vector<int> ln0x, ln0y, l0sx, l0sy;
+    if (relay_) {
+        ln0x = fft.ln0x();
+        ln0y = fft.ln0y();
+        l0sx = fft.l0sx();
+        l0sy = fft.l0sy();
+    } else {
+        ln0x.resize(npart_);
+        ln0y.resize(npart_);
+        l0sx.resize(npart_);
+        l0sy.resize(npart_);
+        int my_ln0x = is_fft ? static_cast<int>(fft.local_n0_x()) : 0;
+        int my_ln0y = is_fft ? static_cast<int>(fft.local_n0_y()) : 0;
+        int my_l0sx = static_cast<int>(fft.local_0_start_x());
+        int my_l0sy = static_cast<int>(fft.local_0_start_y());
+        MPI_Allgather(&my_ln0x, 1, MPI_INT, ln0x.data(), 1, MPI_INT, MPI_COMM_WORLD);
+        MPI_Allgather(&my_ln0y, 1, MPI_INT, ln0y.data(), 1, MPI_INT, MPI_COMM_WORLD);
+        MPI_Allgather(&my_l0sx, 1, MPI_INT, l0sx.data(), 1, MPI_INT, MPI_COMM_WORLD);
+        MPI_Allgather(&my_l0sy, 1, MPI_INT, l0sy.data(), 1, MPI_INT, MPI_COMM_WORLD);
+    }
 
     int x0 = grid.x0;
     int y0 = grid.y0;
 
     index = 0;
-    for (int r = 0; r < group_size_; ++r) {
+    for (int r = 0; r < npart_; ++r) {
         if (recvcounts_[r] == 0) continue;
 
         // x 方向: 自分の拡張グリッド座標(x0-1 起点)での base と幅
         int xi_base = l0sx[r] - (x0 - 1);
-        //int wx;
         if (xi_base < 0) {
             // 正側折り返し: r(x=0側担当)のデータが自分の +側ゴースト(幅2)へ
             xi_base = nx3_ - 2;
-            //wx = 2;
         } else if (xi_base > nx3_ - 1) {
             // 負側折り返し: r(x=Ng側担当)のデータが自分の -側ゴースト(幅1)へ
             xi_base = 0;
-            //wx = 1;
-        } //else {
-            //wx = std::min(nx3_ - xi_base, ln0x[r]);
-        //}
+        }
 
         // y 方向(同じ構造)
         int yi_base = l0sy[r] - (y0 - 1);
@@ -290,11 +321,15 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
         bwd_copy_len_.push_back(len);
     }
 
-    if (world_rank_ == 0) DEBUG_LOG("Set TransposeBwdPencil");
+    if (world_rank_ == 0) {
+        DEBUG_LOG(std::string("Set TransposeBwdPencil (relay=")
+                  + (relay_ ? "on" : "off") + ")");
+    }
 }
 
 void TransposeBwdPencil::execute() {
-    if (num_groups_ > 1) {
+    // relay なしでは FFT 担当ランクが直接全格子ランクへ送るので Bcast は不要
+    if (relay_ && num_groups_ > 1) {
         broadcast();
         if (world_rank_ == 0) DEBUG_LOG("Broadcast");
     }
@@ -341,7 +376,7 @@ void TransposeBwdPencil::alltoallv() {
     MPI_Alltoallv(
         sendbuf_, sendcounts_.data(), sdispls_.data(), MPI_DOUBLE,
         recvbuf_, recvcounts_.data(), rdispls_.data(), MPI_DOUBLE,
-        group_comm_
+        a2a_comm_
     );
     timer_.stop(t_comm_, MPI_COMM_WORLD);
 }
@@ -365,6 +400,7 @@ void TransposeBwdPencil::reorder_from_alltoallv() {
 }
 
 TransposeBwdPencil::~TransposeBwdPencil() {
+    // a2a_comm_ は group_comm_ か MPI_COMM_WORLD の借り物なので free しない
     if (group_comm_ != MPI_COMM_NULL) MPI_Comm_free(&group_comm_);
     if (broadcast_comm_ != MPI_COMM_NULL) MPI_Comm_free(&broadcast_comm_);
 }

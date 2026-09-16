@@ -66,7 +66,7 @@ int gcd_i(int a, int b) {
 // 起動時にグループ構成を出力する。
 // 上限値を書き換えて挙動を調べる運用では、どの設定で走ったかがログに
 // 残っていないと結果を突き合わせられないため。
-void print_config(int Ng, int world_size, int pgroup) {
+void print_config(int Ng, int world_size, int pgroup, int relay) {
     int dims[3] = {0, 0, 0};
     MPI_Dims_create(world_size, 3, dims);
 
@@ -83,6 +83,17 @@ void print_config(int Ng, int world_size, int pgroup) {
         std::cout << "  [warn] 2べき成分が Ng の倍数ではありません"
                   << " (slab のスラブ幅が最小になりません)" << std::endl;
     }
+
+    // リレーメッシュの有無（Pencil のみ対応）
+    std::cout << "relay mesh = " << (relay ? "on" : "off")
+              << (relay ? "  (グループ内 Alltoallv + グループ間 Reduce/Bcast)"
+                        : "  (MPI_COMM_WORLD で一括 Alltoallv、Reduce/Bcast なし)")
+              << std::endl;
+    if (!relay) {
+        std::cout << "  [note] relay=off は Pencil(FFTE2D) のみ有効。"
+                  << "slab は従来動作のまま。" << std::endl;
+    }
+
     const int cap2 = (pgroup > 0) ? pgroup : FFT_FFTE2::cap_for(Ng);
     struct Entry { const char* name; int cap; bool slab; };
     const Entry tbl[] = {
@@ -104,6 +115,7 @@ void print_config(int Ng, int world_size, int pgroup) {
             int d2[2] = {0, 0};
             MPI_Dims_create(g, 2, d2);
             std::cout << "  (NPUX=" << d2[0] << ", NPUY=" << d2[1] << ")";
+            if (!relay) std::cout << "  <- この " << g << " プロセスだけが FFT を担当";
         }
         std::cout << std::endl;
     }
@@ -125,12 +137,15 @@ int main(int argc, char** argv) {
     std::string meth_s = get_opt(argc, argv, "method");
     std::string pg_s   = get_opt(argc, argv, "pgroup");
     const int pgroup   = pg_s.empty() ? 0 : std::atoi(pg_s.c_str());
+    std::string rl_s   = get_opt(argc, argv, "relay");
+    const int relay    = rl_s.empty() ? 1 : std::atoi(rl_s.c_str());
 
     if (ng_s.empty()) {
         if (rank == 0) {
             std::cerr << "Usage: " << argv[0]
                       << " --ng=N [--source=auto,input] [--fft=fftw,ffte1d,ffte2d]"
-                      << " [--method=1,2,3] [--np=N] [--root=DIR]" << std::endl;
+                      << " [--method=1,2,3] [--np=N] [--root=DIR]"
+                      << " [--pgroup=N] [--relay=0|1]" << std::endl;
         }
         MPI_Abort(MPI_COMM_WORLD, 1);
         return 1;
@@ -156,7 +171,7 @@ int main(int argc, char** argv) {
 
     const int world_size = mpi_env.world_size();
 
-    if (rank == 0) print_config(Ng, world_size, pgroup);
+    if (rank == 0) print_config(Ng, world_size, pgroup, relay);
 
     const double Omega0 = 1.0;
     const int warm_up = 2;
@@ -197,11 +212,12 @@ int main(int argc, char** argv) {
                 std::unique_ptr<TransposeFwd> transpose_fwd;
                 std::unique_ptr<TransposeBwd> transpose_bwd;
                 if (fft_type != 2) {
+                    // slab は relay 非対応（従来動作のまま）
                     transpose_fwd = std::make_unique<TransposeFwdSlab>(grid, *fft, mpi_env, buffer_manager, timer, method);
                     transpose_bwd = std::make_unique<TransposeBwdSlab>(grid, *fft, mpi_env, buffer_manager, timer, method);
                 } else {
-                    transpose_fwd = std::make_unique<TransposeFwdPencil>(grid, *fft, mpi_env, buffer_manager, timer, method);
-                    transpose_bwd = std::make_unique<TransposeBwdPencil>(grid, *fft, mpi_env, buffer_manager, timer, method);
+                    transpose_fwd = std::make_unique<TransposeFwdPencil>(grid, *fft, mpi_env, buffer_manager, timer, method, relay);
+                    transpose_bwd = std::make_unique<TransposeBwdPencil>(grid, *fft, mpi_env, buffer_manager, timer, method, relay);
                 }
 
                 Interpolater interpolater(grid, particle, mpi_env, buffer_manager, timer);
@@ -221,30 +237,50 @@ int main(int argc, char** argv) {
                 }
 
                 if (rank == 0) {
+                    // pgroup / relay は既定値のときだけ省略する。
+                    // 同じ nproc を条件違いで複数回まわしたとき、
+                    // ログ上で見分けがつかなくなるのを防ぐため。
                     std::cout << "\n========== " << fft_name_of(fft_type)
                               << " Method " << method
                               << " Source " << source_name
-                              << " NPROC " << world_size
-                              << " ==========" << std::endl;
+                              << " NPROC " << world_size;
+                    if (pgroup > 0) std::cout << " PGROUP " << pgroup;
+                    if (relay == 0) std::cout << " RELAY 0";
+                    std::cout << " ==========" << std::endl;
                 }
                 timer.print();
             }
         }
     };
 
-    // ---- warm_up: 引数によらず method=1 / FFTW で 1 回だけ ----
+    // ---- warm_up: 選択された最初の fft / method で 1 回だけ ----
     {
         Timer timer(warm_up, loop, rank);
-        int method = 1;
+
+        // 計測対象と同じ方式で暖機する
+        int wtype  = fft_selected(0) ? 0 : (fft_selected(1) ? 1 : 2);
+        int method = methods.count("1") ? 1 : (methods.count("2") ? 2 : 3);
+
         BufferManager buffer_manager;
         GridAuto grid(Ng, mpi_env);
 
-        std::unique_ptr<FFT> fft =
-            std::make_unique<FFT_FFTW>(Ng, Omega0, mpi_env, buffer_manager, timer, method);
-        std::unique_ptr<TransposeFwd> transpose_fwd =
-            std::make_unique<TransposeFwdSlab>(grid, *fft, mpi_env, buffer_manager, timer, method);
-        std::unique_ptr<TransposeBwd> transpose_bwd =
-            std::make_unique<TransposeBwdSlab>(grid, *fft, mpi_env, buffer_manager, timer, method);
+        std::unique_ptr<FFT> fft;
+        if (wtype == 0)
+            fft = std::make_unique<FFT_FFTW> (Ng, Omega0, mpi_env, buffer_manager, timer, method);
+        else if (wtype == 1)
+            fft = std::make_unique<FFT_FFTE1>(Ng, Omega0, mpi_env, buffer_manager, timer, method);
+        else
+            fft = std::make_unique<FFT_FFTE2>(Ng, Omega0, mpi_env, buffer_manager, timer, method, pgroup);
+
+        std::unique_ptr<TransposeFwd> transpose_fwd;
+        std::unique_ptr<TransposeBwd> transpose_bwd;
+        if (wtype != 2) {
+            transpose_fwd = std::make_unique<TransposeFwdSlab>(grid, *fft, mpi_env, buffer_manager, timer, method);
+            transpose_bwd = std::make_unique<TransposeBwdSlab>(grid, *fft, mpi_env, buffer_manager, timer, method);
+        } else {
+            transpose_fwd = std::make_unique<TransposeFwdPencil>(grid, *fft, mpi_env, buffer_manager, timer, method, relay);
+            transpose_bwd = std::make_unique<TransposeBwdPencil>(grid, *fft, mpi_env, buffer_manager, timer, method, relay);
+        }
 
         ParticleAuto particle(Np3, grid, mpi_env);
         Interpolater interpolater(grid, particle, mpi_env, buffer_manager, timer);

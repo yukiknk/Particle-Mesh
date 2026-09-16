@@ -14,8 +14,11 @@
 
 class TransposeBwdPencil : public TransposeBwd {
 public:
+    // relay: 1 = リレーメッシュあり（従来）
+    //        0 = リレーメッシュなし。MPI_COMM_WORLD で一括 Alltoallv し、
+    //            グループ間 Bcast を行わない。
     TransposeBwdPencil(const Grid& grid, const FFT& fft, const MPIEnv& mpi,
-                       BufferManager& buffer, Timer& timer, int method);
+                       BufferManager& buffer, Timer& timer, int method, int relay = 1);
     ~TransposeBwdPencil() override;
 
     TransposeBwdPencil(const TransposeBwdPencil&) = delete;
@@ -44,6 +47,11 @@ private:
     int num_groups_;
     int group_id_;  
     int local_rank_;
+
+    bool relay_;                            // リレーメッシュを使うか
+    int  npart_;                            // Alltoallv の相手数
+    MPI_Comm a2a_comm_ = MPI_COMM_NULL;     // Alltoallv に使うコミュニケータ（借り物、free しない）
+
     MPI_Comm group_comm_ = MPI_COMM_NULL;
     MPI_Comm broadcast_comm_ = MPI_COMM_NULL;
 

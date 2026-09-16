@@ -15,7 +15,7 @@
 class TransposeFwdPencil : public TransposeFwd {
 public:
     TransposeFwdPencil(const Grid& grid, const FFT& fft, const MPIEnv& mpi,
-                       BufferManager& buffer, Timer& timer, int method);
+                       BufferManager& buffer, Timer& timer, int method, int relay = 1);
     ~TransposeFwdPencil() override;
     
     TransposeFwdPencil(const TransposeFwdPencil&) = delete;
@@ -44,6 +44,9 @@ private:
     int num_groups_;
     int group_id_;  
     int local_rank_;
+    bool relay_;
+    int  npart_;
+    MPI_Comm a2a_comm_ = MPI_COMM_NULL;
     MPI_Comm group_comm_ = MPI_COMM_NULL;
     MPI_Comm reduce_comm_ = MPI_COMM_NULL;
     

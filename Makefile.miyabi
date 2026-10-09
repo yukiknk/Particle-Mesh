@@ -1,0 +1,55 @@
+# Miyabi-G 用（NVIDIA HPC SDK 25.9 + HPC-X）
+CXX = mpicxx
+FC  = mpifort
+
+FFTW_DIR    = /work/opt/local/aarch64/apps/nvidia/25.9/fftw/3.3.10
+MPIFFTW_DIR = /work/opt/local/aarch64/apps/nvidia/25.9/nv-hpcx/25.9/mpi-fftw/3.3.10
+
+CXXFLAGS = -fast -mp -std=c++17 -I./include -I$(FFTW_DIR)/include -I$(MPIFFTW_DIR)/include
+FFLAGS   = -fast -mp
+
+LIBS = -L$(MPIFFTW_DIR)/lib -L$(FFTW_DIR)/lib \
+       -Wl,-rpath,$(MPIFFTW_DIR)/lib,-rpath,$(FFTW_DIR)/lib \
+       -lfftw3_mpi -lfftw3_omp -lfftw3 -lm \
+       -fortranlibs -lmpi_mpifh
+
+TARGET = pm_fft_test
+
+SRCS = src/main.cpp \
+       src/interpolater.cpp \
+       src/grouping.cpp \
+       src/fft/fft_fftw.cpp \
+       src/fft/fft_ffte1.cpp \
+       src/fft/fft_ffte2.cpp \
+       src/transpose/transpose_fwd_slab.cpp \
+       src/transpose/transpose_bwd_slab.cpp \
+       src/transpose/transpose_fwd_pencil.cpp \
+       src/transpose/transpose_bwd_pencil.cpp
+
+FSRCS = src/fft/factor.f \
+        src/fft/fft235.f \
+        src/fft/kernel.f \
+        src/fft/pdzfft3d.f \
+        src/fft/pzdfft3d.f \
+        src/fft/pdzfft3dv.f \
+        src/fft/pzdfft3dv.f
+
+CPP_OBJS = $(SRCS:.cpp=.o)
+F_OBJS   = $(FSRCS:.f=.o)
+OBJS     = $(CPP_OBJS) $(F_OBJS)
+
+all: $(TARGET)
+
+$(TARGET): $(OBJS)
+	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJS) $(LIBS)
+
+%.o: %.cpp
+	$(CXX) $(CXXFLAGS) -c $< -o $@
+
+%.o: %.f
+	$(FC) $(FFLAGS) -c $< -o $@
+
+clean:
+	rm -f $(OBJS) $(TARGET)
+
+.PHONY: all clean

@@ -2,3 +2,6 @@
 pm_fftw
 pm_fft_test
 docs_gemini
+make.log
+fftw_wisdom_*.dat
+old/

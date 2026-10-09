@@ -4,6 +4,8 @@
 #include <string>
 #include "debug.h"
 #include "grouping.h"
+#include "transpose/pencil_overlap.h"
+#include <iostream>
 
 TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const MPIEnv& mpi,
                                        BufferManager& buffer, Timer& timer, int method, int relay)
@@ -52,19 +54,15 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
     recvcounts_.assign(npart_, 0);
     rdispls_.assign(npart_, 0);
 
-    // FFT 入力側の 2D 分割情報(自分の担当範囲)
-    int local_0_start_x = static_cast<int>(fft.local_0_start_x());
-    int local_0_start_y = static_cast<int>(fft.local_0_start_y());
-    int local_n0_x = static_cast<int>(fft.local_n0_x());
-    int local_n0_y = static_cast<int>(fft.local_n0_y());
+    // 自分（FFT 側）の pencil。relay なしで FFT を担当しないランクは幅 0（何も送らない）。
+    const int my_x0 = static_cast<int>(fft.local_0_start_x());
+    const int my_y0 = static_cast<int>(fft.local_0_start_y());
+    const int my_lx = (relay_ || is_fft) ? static_cast<int>(fft.local_n0_x()) : 0;
+    const int my_ly = (relay_ || is_fft) ? static_cast<int>(fft.local_n0_y()) : 0;
 
-    // relay ありなら全ランクが自グループ内の送信側。
-    // relay なしなら FFT 担当ランクだけが送信側。
-    const bool i_send = relay_ || is_fft;
-
-    // 全プロセスの Grid 情報を収集
-    std::vector<int> vnx(npart_), vny(npart_), vnz(npart_);
+    // ---- 相手（受け取る側）全員の grid 情報を収集 ----
     std::vector<int> vx0(npart_), vy0(npart_), vz0(npart_);
+    std::vector<int> vnx(npart_), vny(npart_), vnz(npart_);
     MPI_Allgather(&grid.x0, 1, MPI_INT, vx0.data(), 1, MPI_INT, a2a_comm_);
     MPI_Allgather(&grid.y0, 1, MPI_INT, vy0.data(), 1, MPI_INT, a2a_comm_);
     MPI_Allgather(&grid.z0, 1, MPI_INT, vz0.data(), 1, MPI_INT, a2a_comm_);
@@ -72,113 +70,41 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
     MPI_Allgather(&grid.ny, 1, MPI_INT, vny.data(), 1, MPI_INT, a2a_comm_);
     MPI_Allgather(&grid.nz, 1, MPI_INT, vnz.data(), 1, MPI_INT, a2a_comm_);
 
-    // ---- 送信量計算 ----
-    // 自分の FFT 担当範囲 [local_0_start_*, +local_n0_*) と
-    // 各プロセス r の拡張グリッド [vx0[r]-1, vx0[r]+vnx[r]+2)(幅 nx+3, -側1層/+側2層)の重なり。
-    // プロセス数が十分多い(3x3x3 以上)前提で、1つの r には1種類のみ送る。
-    if (i_send) {
-        for (int r = 0; r < npart_; ++r) {
-            int nz3_r = vnz[r] + 3;
+    using pencil_overlap::Run;
+    using pencil_overlap::split_runs;
+    using pencil_overlap::clip;
 
-            // --- x 方向の重なり/折り返し判定 ---
-            int wx = 0;
-            // 通常領域
-            int s0x = vx0[r] - 1;
-            int s1x = s0x + vnx[r] + 3;
-            int l0x = std::max(s0x, local_0_start_x);
-            int l1x = std::min(s1x, local_0_start_x + local_n0_x);
-            if (l0x < l1x) {
-                wx = l1x - l0x;
-            }
-            // x+ 折り返し: r が x 末端、自分が x=0 側担当 → +側ゴースト2層が x=0,1 に来る
-            else if ((vx0[r] + vnx[r] == Ng_) && local_0_start_x == 0) {
-                wx = 2;
-            }
-            // x- 折り返し: r が x 始端(vx0[r]==0)、自分が x=Ng 側担当 → -側ゴースト1層が x=Ng-1 に来る
-            else if (vx0[r] == 0 && (local_0_start_x + local_n0_x == Ng_)) {
-                wx = 1;
-            }
-
-            // --- y 方向の重なり/折り返し判定 ---
-            int wy = 0;
-            int s0y = vy0[r] - 1;
-            int s1y = s0y + vny[r] + 3;
-            int l0y = std::max(s0y, local_0_start_y);
-            int l1y = std::min(s1y, local_0_start_y + local_n0_y);
-            if (l0y < l1y) {
-                wy = l1y - l0y;
-            }
-            else if ((vy0[r] + vny[r] == Ng_) && local_0_start_y == 0) {
-                wy = 2;
-            }
-            else if (vy0[r] == 0 && (local_0_start_y + local_n0_y == Ng_)) {
-                wy = 1;
-            }
-
-            // 両方向に重なりがあれば送信
-            if (wx > 0 && wy > 0) {
-                sendcounts_[r] = wx * wy * nz3_r;
+    // ---- 送信側 ----
+    // 相手 r の拡張配列 [nx+3][ny+3][nz+3] は大域座標 x0-1.., y0-1.., z0-1.. に対応し、
+    // 両端が周期境界で折り返す。自分の pencil と重なる塊を r の昇順に数え上げ、
+    // sendbuf の i 番目に入れる fftbuf 内の位置 pos0_[i] を作る。
+    for (int r = 0; r < npart_; ++r) {
+        const std::vector<Run> xruns = split_runs(vx0[r] - 1, vnx[r] + 3, Ng_);
+        const std::vector<Run> yruns = split_runs(vy0[r] - 1, vny[r] + 3, Ng_);
+        const int nz3_r = vnz[r] + 3;
+        const int z_start = ((vz0[r] - 1) % Ng_ + Ng_) % Ng_;
+        size_t to_r = 0;
+        for (const Run& px : clip(xruns, my_x0, my_lx)) {
+            for (const Run& py : clip(yruns, my_y0, my_ly)) {
+                for (int dx = 0; dx < px.len; ++dx) {
+                    const size_t xi = static_cast<size_t>(px.g0 + dx - my_x0);
+                    for (int dy = 0; dy < py.len; ++dy) {
+                        const size_t yi = static_cast<size_t>(py.g0 + dy - my_y0);
+                        const size_t base = (xi * my_ly + yi) * stride_;
+                        for (int k = 0; k < nz3_r; ++k) {
+                            pos0_.push_back(base + (z_start + k) % Ng_);
+                            ++to_r;
+                        }
+                    }
+                }
             }
         }
+        sendcounts_[r] = static_cast<int>(to_r);
     }
-
     for (int r = 1; r < npart_; ++r) {
         sdispls_[r] = sdispls_[r - 1] + sendcounts_[r - 1];
     }
-
-    send_total_ = static_cast<size_t>(sdispls_.back()) + sendcounts_.back();
-    pos0_.resize(send_total_);
-
-    size_t index = 0;
-    for (int r = 0; r < npart_; ++r) {
-        if (sendcounts_[r] == 0) continue;
-
-        int nz3_r = vnz[r] + 3;
-
-        // --- x 方向: base(fftbuf ローカル座標)と幅 ---
-        int xi_base;
-        int s0x = vx0[r] - 1;
-        int s1x = s0x + vnx[r] + 3;
-        int l0x = std::max(s0x, local_0_start_x);
-        int l1x = std::min(s1x, local_0_start_x + local_n0_x);
-        if (l0x < l1x) {
-            xi_base = l0x - local_0_start_x;     // 通常領域
-        } else if ((vx0[r] + vnx[r] == Ng_) && local_0_start_x == 0) {
-            xi_base = 0;                          // x+ 折り返し: x=0,1 を送る
-        } else { // x- 折り返し: x=Ng-1 を送る(自分が x=Ng 側担当)
-            xi_base = local_n0_x - 1;
-        }
-
-        // --- y 方向 ---
-        int yi_base, wy;
-        int s0y = vy0[r] - 1;
-        int s1y = s0y + vny[r] + 3;
-        int l0y = std::max(s0y, local_0_start_y);
-        int l1y = std::min(s1y, local_0_start_y + local_n0_y);
-        if (l0y < l1y) {
-            yi_base = l0y - local_0_start_y;
-            wy = l1y - l0y;
-        } else if ((vy0[r] + vny[r] == Ng_) && local_0_start_y == 0) {
-            yi_base = 0;
-            wy = 2;
-        } else {
-            yi_base = local_n0_y - 1;
-            wy = 1;
-        }
-
-        // --- z 方向の開始(拡張グリッドの -1 ゴーストから、周期で巻く)---
-        int z_start = (vz0[r] - 1 + Ng_) % Ng_;
-
-        // sendbuf の各要素 i に対応する fftbuf 位置を計算
-        for (int i = 0; i < sendcounts_[r]; ++i) {
-            int xi = xi_base + i / (wy * nz3_r);
-            int yi = yi_base + (i / nz3_r) % wy;
-            int zi = (z_start + i % nz3_r) % Ng_;
-
-            pos0_[index] = (static_cast<size_t>(xi) * local_n0_y + yi) * stride_ + zi;
-            ++index;
-        }
-    }
+    send_total_ = pos0_.size();
 
     // ---- 受信カウントを取得 ----
     MPI_Alltoall(sendcounts_.data(), 1, MPI_INT, recvcounts_.data(), 1, MPI_INT, a2a_comm_);
@@ -212,7 +138,7 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
     pos1_.resize(recv_total_);
 
     // FFT 側 Pencil 分割情報。relay なしのときは WORLD 全体で集め直し、
-    // FFT を担当しないランクは 0 を報告する（そこからは受信しないため実際には参照されない）。
+    // FFT を担当しないランクは 0 を報告する（そこからは何も届かない）。
     std::vector<int> ln0x, ln0y, l0sx, l0sy;
     if (relay_) {
         ln0x = fft.ln0x();
@@ -234,44 +160,35 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
         MPI_Allgather(&my_l0sy, 1, MPI_INT, l0sy.data(), 1, MPI_INT, MPI_COMM_WORLD);
     }
 
-    int x0 = grid.x0;
-    int y0 = grid.y0;
-
-    index = 0;
-    for (int r = 0; r < npart_; ++r) {
-        if (recvcounts_[r] == 0) continue;
-
-        // x 方向: 自分の拡張グリッド座標(x0-1 起点)での base と幅
-        int xi_base = l0sx[r] - (x0 - 1);
-        if (xi_base < 0) {
-            // 正側折り返し: r(x=0側担当)のデータが自分の +側ゴースト(幅2)へ
-            xi_base = nx3_ - 2;
-        } else if (xi_base > nx3_ - 1) {
-            // 負側折り返し: r(x=Ng側担当)のデータが自分の -側ゴースト(幅1)へ
-            xi_base = 0;
-        }
-
-        // y 方向(同じ構造)
-        int yi_base = l0sy[r] - (y0 - 1);
-        int wy;
-        if (yi_base < 0) {
-            yi_base = ny3_ - 2;
-            wy = 2;
-        } else if (yi_base > ny3_ - 1) {
-            yi_base = 0;
-            wy = 1;
-        } else {
-            wy = std::min(ny3_ - yi_base, ln0y[r]);
-        }
-
-        // recvbuf の i 番目を gridbuf のどこに書くか
-        for (int i = 0; i < recvcounts_[r]; ++i) {
-            int xi = xi_base + (i / (wy * nz3_));
-            int yi = yi_base + ((i / nz3_) % wy);
-            int zi = i % nz3_;
-
-            pos1_[index] = (static_cast<size_t>(xi) * ny3_ + yi) * nz3_ + zi;
-            ++index;
+    // 送信元 r（pencil）が送ってくる塊を、送信側と同じ順番で数え上げて、
+    // 自分の拡張配列内の位置を決める
+    {
+        const std::vector<Run> xruns = split_runs(grid.x0 - 1, nx3_, Ng_);
+        const std::vector<Run> yruns = split_runs(grid.y0 - 1, ny3_, Ng_);
+        size_t index = 0;
+        for (int r = 0; r < npart_; ++r) {
+            size_t from_r = 0;
+            for (const Run& px : clip(xruns, l0sx[r], ln0x[r])) {
+                for (const Run& py : clip(yruns, l0sy[r], ln0y[r])) {
+                    for (int dx = 0; dx < px.len; ++dx) {
+                        for (int dy = 0; dy < py.len; ++dy) {
+                            const size_t base =
+                                (static_cast<size_t>(px.i0 + dx) * ny3_ + (py.i0 + dy)) * nz3_;
+                            for (int k = 0; k < nz3_; ++k) {
+                                if (index < recv_total_) pos1_[index] = base + k;
+                                ++index;
+                                ++from_r;
+                            }
+                        }
+                    }
+                }
+            }
+            if (from_r != static_cast<size_t>(recvcounts_[r])) {
+                std::cerr << "TransposeBwdPencil: rank " << world_rank_ << " が相手 " << r
+                          << " から受け取る個数が合わない（数え上げ " << from_r
+                          << " / 通知 " << recvcounts_[r] << "）" << std::endl;
+                MPI_Abort(MPI_COMM_WORLD, 42);
+            }
         }
     }
 

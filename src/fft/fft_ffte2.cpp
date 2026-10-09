@@ -90,7 +90,7 @@ FFT_FFTE2::FFT_FFTE2(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& bu
         for (ptrdiff_t i = 0; i < local_n1_z_; ++i) {
             for (ptrdiff_t j = 0; j < local_n1_y_; ++j) {
                 for (int k = 0; k < Ng_; ++k) {
-                    size_t index = (static_cast<size_t>(i) * local_n1_y_ + j) * Ng_ + k;
+                    size_t index = (static_cast<size_t>(k) * local_n1_y_ + j) * local_n1_z_ + i;
                     int gi = i + local_1_start_z_;
                     int gj = j + local_1_start_y_;
                     if (!(gi == 0 && gj == 0 && k == 0)) {

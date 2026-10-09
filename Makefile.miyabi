@@ -34,6 +34,21 @@ FSRCS = src/fft/factor.f \
         src/fft/pdzfft3dv.f \
         src/fft/pzdfft3dv.f
 
+# ---- heFFTe (GPU, CUDA 13.0) ----
+HEFFTE_DIR = /work/gu99/u99001/opt/heffte
+HEFFTE_LIB = $(firstword $(wildcard $(HEFFTE_DIR)/lib64 $(HEFFTE_DIR)/lib))
+CUDA_DIR   = $(or $(NVHPC_CUDA_HOME),/work/opt/local/aarch64/cores/nvidia/25.9/Linux_aarch64/25.9/cuda/13.0)
+CUDA_INC   = $(firstword $(wildcard $(CUDA_DIR)/include $(CUDA_DIR)/targets/sbsa-linux/include))
+CUDA_LIB   = $(firstword $(wildcard $(CUDA_DIR)/lib64 $(CUDA_DIR)/targets/sbsa-linux/lib))
+NVHPC_DIR  = $(or $(NVHPC_ROOT),/work/opt/local/aarch64/cores/nvidia/25.9/Linux_aarch64/25.9)
+MATH_LIB   = $(firstword $(wildcard $(NVHPC_DIR)/math_libs/13.0/lib64 $(NVHPC_DIR)/math_libs/lib64))
+
+CXXFLAGS += -DUSE_HEFFTE -I$(HEFFTE_DIR)/include -I$(CUDA_INC)
+LIBS     += -L$(HEFFTE_LIB) -L$(MATH_LIB) -L$(CUDA_LIB) \
+            -Wl,-rpath,$(HEFFTE_LIB),-rpath,$(MATH_LIB),-rpath,$(CUDA_LIB) \
+            -lheffte -lcufft -lcudart
+SRCS     += src/fft/fft_heffte.cpp
+
 CPP_OBJS = $(SRCS:.cpp=.o)
 F_OBJS   = $(FSRCS:.f=.o)
 OBJS     = $(CPP_OBJS) $(F_OBJS)

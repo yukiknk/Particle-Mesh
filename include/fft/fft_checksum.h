@@ -1,0 +1,41 @@
+#pragma once
+// FFT 実装どうしの結果照合用。環境変数 PM_CHECKSUM=1 のときだけ動く。
+// backward() 直後の実空間配列（ポテンシャル）について、二乗和と最大絶対値を出す。
+// 計測には含めない（タイマー停止後に呼ぶ）。
+#include <mpi.h>
+#include <cmath>
+#include <cstddef>
+#include <cstdio>
+#include <cstdlib>
+
+inline bool pm_checksum_enabled() {
+    const char* e = std::getenv("PM_CHECKSUM");
+    return e != nullptr && e[0] != '\0' && e[0] != '0';
+}
+
+// real: [n0][Ng][stride] の並び（有効なのは各行の先頭 Ng 個）
+inline void pm_print_checksum(const char* name, const double* real,
+                              std::ptrdiff_t n0, int Ng, int stride, MPI_Comm comm) {
+    double sum2 = 0.0, amax = 0.0;
+    #pragma omp parallel for collapse(2) reduction(+:sum2) reduction(max:amax)
+    for (std::ptrdiff_t i = 0; i < n0; ++i) {
+        for (int j = 0; j < Ng; ++j) {
+            const double* row = real + (static_cast<size_t>(i) * Ng + j) * stride;
+            for (int k = 0; k < Ng; ++k) {
+                const double v = row[k];
+                sum2 += v * v;
+                const double av = std::fabs(v);
+                if (av > amax) amax = av;
+            }
+        }
+    }
+    double gsum2 = 0.0, gmax = 0.0;
+    MPI_Reduce(&sum2, &gsum2, 1, MPI_DOUBLE, MPI_SUM, 0, comm);
+    MPI_Reduce(&amax, &gmax, 1, MPI_DOUBLE, MPI_MAX, 0, comm);
+    int rank = 0;
+    MPI_Comm_rank(comm, &rank);
+    if (rank == 0) {
+        std::printf("[checksum] %-6s sum2=%.12e max=%.12e\n", name, gsum2, gmax);
+        std::fflush(stdout);
+    }
+}

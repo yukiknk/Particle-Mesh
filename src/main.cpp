@@ -20,6 +20,9 @@
 #include "fft/fft_fftw.h"
 #include "fft/fft_ffte1.h"
 #include "fft/fft_ffte2.h"
+#ifdef USE_HEFFTE
+#include "fft/fft_heffte.h"
+#endif
 #include "transpose/transpose_fwd.h"
 #include "transpose/transpose_bwd.h"
 #include "transpose/transpose_fwd_slab.h"
@@ -122,6 +125,21 @@ void print_config(int Ng, int world_size, int pgroup, int relay) {
     std::cout << "=========================\n" << std::endl;
 }
 
+// heFFTe 版の FFT を作る。heFFTe なしのビルドでは実行時に止める。
+std::unique_ptr<FFT> make_heffte(int Ng, double Omega0, const MPIEnv& mpi,
+                                 BufferManager& buffer, Timer& timer, int method) {
+#ifdef USE_HEFFTE
+    return std::make_unique<FFT_HEFFTE>(Ng, Omega0, mpi, buffer, timer, method);
+#else
+    (void)Ng; (void)Omega0; (void)buffer; (void)timer; (void)method;
+    if (mpi.world_rank() == 0) {
+        std::cerr << "--fft=heffte: このバイナリは heFFTe なしでビルドされています" << std::endl;
+    }
+    MPI_Abort(MPI_COMM_WORLD, 1);
+    return nullptr;
+#endif
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -143,7 +161,7 @@ int main(int argc, char** argv) {
     if (ng_s.empty()) {
         if (rank == 0) {
             std::cerr << "Usage: " << argv[0]
-                      << " --ng=N [--source=auto,input] [--fft=fftw,ffte1d,ffte2d]"
+                      << " --ng=N [--source=auto,input] [--fft=fftw,ffte1d,ffte2d,heffte]"
                       << " [--method=1,2,3] [--np=N] [--root=DIR]"
                       << " [--pgroup=N] [--relay=0|1]" << std::endl;
         }
@@ -181,17 +199,17 @@ int main(int argc, char** argv) {
 
     // fft_type: 0=FFTW 1=FFTE1D 2=FFTE2D
     auto fft_name_of = [](int t) -> std::string {
-        return t == 0 ? "FFTW" : (t == 1 ? "FFTE1D" : "FFTE2D");
+        return t == 0 ? "FFTW" : (t == 1 ? "FFTE1D" : (t == 2 ? "FFTE2D" : "HEFFTE"));
     };
     auto fft_selected = [&](int t) {
-        return ffts.count(t == 0 ? "fftw" : (t == 1 ? "ffte1d" : "ffte2d")) > 0;
+        return ffts.count(t == 0 ? "fftw" : (t == 1 ? "ffte1d" : (t == 2 ? "ffte2d" : "heffte"))) > 0;
     };
 
     // 1 サイクル（grid/particle 生成済み）に対し fft×method を回す
     auto run_combinations =
         [&](Grid& grid, Particle& particle, const std::string& source_name) {
         // grid/particle に依存する FFT/transpose は組み合わせごとに作り直す
-        int fft_sequence[] = {0, 1, 2};
+        int fft_sequence[] = {0, 1, 2, 3};
         for (int fft_type : fft_sequence) {
             if (!fft_selected(fft_type)) continue;
             for (const std::string& m : {std::string("1"), std::string("2"), std::string("3")}) {
@@ -206,8 +224,10 @@ int main(int argc, char** argv) {
                     fft = std::make_unique<FFT_FFTW>(Ng, Omega0, mpi_env, buffer_manager, timer, method);
                 else if (fft_type == 1)
                     fft = std::make_unique<FFT_FFTE1>(Ng, Omega0, mpi_env, buffer_manager, timer, method);
-                else
+                else if (fft_type == 2)
                     fft = std::make_unique<FFT_FFTE2>(Ng, Omega0, mpi_env, buffer_manager, timer, method, pgroup);
+                else
+                    fft = make_heffte(Ng, Omega0, mpi_env, buffer_manager, timer, method);
 
                 std::unique_ptr<TransposeFwd> transpose_fwd;
                 std::unique_ptr<TransposeBwd> transpose_bwd;
@@ -258,7 +278,7 @@ int main(int argc, char** argv) {
         Timer timer(warm_up, loop, rank);
 
         // 計測対象と同じ方式で暖機する
-        int wtype  = fft_selected(0) ? 0 : (fft_selected(1) ? 1 : 2);
+        int wtype  = fft_selected(0) ? 0 : (fft_selected(1) ? 1 : (fft_selected(2) ? 2 : 3));
         int method = methods.count("1") ? 1 : (methods.count("2") ? 2 : 3);
 
         BufferManager buffer_manager;
@@ -269,8 +289,10 @@ int main(int argc, char** argv) {
             fft = std::make_unique<FFT_FFTW> (Ng, Omega0, mpi_env, buffer_manager, timer, method);
         else if (wtype == 1)
             fft = std::make_unique<FFT_FFTE1>(Ng, Omega0, mpi_env, buffer_manager, timer, method);
-        else
+        else if (wtype == 2)
             fft = std::make_unique<FFT_FFTE2>(Ng, Omega0, mpi_env, buffer_manager, timer, method, pgroup);
+        else
+            fft = make_heffte(Ng, Omega0, mpi_env, buffer_manager, timer, method);
 
         std::unique_ptr<TransposeFwd> transpose_fwd;
         std::unique_ptr<TransposeBwd> transpose_bwd;

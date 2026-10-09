@@ -7,6 +7,7 @@
 #include "debug.h"
 #include <omp.h>
 #include "grouping.h"
+#include "fft/fft_checksum.h"
 
 FFT_FFTW::FFT_FFTW(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method) : timer_(timer), world_rank_(mpi.world_rank()), Ng_(Ng), stride_(Ng + 2) {
     t_fft_ = timer_.register_timer("FFT");
@@ -163,6 +164,7 @@ void FFT_FFTW::backward() {
         timer_.start(comm_);
         fftw_mpi_execute_dft_c2r(backward_, complex_, real_);
         timer_.stop(t_ifft_, comm_);
+        if (pm_checksum_enabled()) pm_print_checksum("FFTW", real_, local_n0_, Ng_, stride_, comm_);
         if(world_rank_ == 0) {
             DEBUG_LOG("IFFT");
         }

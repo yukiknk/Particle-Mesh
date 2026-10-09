@@ -164,7 +164,7 @@ void FFT_FFTW::backward() {
         timer_.start(comm_);
         fftw_mpi_execute_dft_c2r(backward_, complex_, real_);
         timer_.stop(t_ifft_, comm_);
-        if (pm_checksum_enabled()) pm_print_checksum("FFTW", real_, local_n0_, Ng_, stride_, comm_);
+        if (pm_checksum_enabled()) pm_print_checksum("FFTW", real_, static_cast<size_t>(local_n0_) * Ng_, Ng_, stride_, comm_);
         if(world_rank_ == 0) {
             DEBUG_LOG("IFFT");
         }

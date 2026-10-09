@@ -125,19 +125,52 @@ void print_config(int Ng, int world_size, int pgroup, int relay) {
     std::cout << "=========================\n" << std::endl;
 }
 
+// fft_type: 0=FFTW 1=FFTE1D 2=FFTE2D 3=heFFTe(slab) 4=heFFTe(pencil)
+const int kNumFftTypes = 5;
+
+const char* fft_label(int t) {
+    static const char* const names[] = {"FFTW", "FFTE1D", "FFTE2D", "HEFFTE_SLAB", "HEFFTE_PENCIL"};
+    return names[t];
+}
+
+// --fft= に書かれた名前で選ばれているか。"heffte" は "heffte-slab" の別名。
+bool fft_requested(const std::set<std::string>& ffts, int t) {
+    static const char* const keys[] = {"fftw", "ffte1d", "ffte2d", "heffte-slab", "heffte-pencil"};
+    if (t == 3 && ffts.count("heffte")) return true;
+    return ffts.count(keys[t]) > 0;
+}
+
 // heFFTe 版の FFT を作る。heFFTe なしのビルドでは実行時に止める。
 std::unique_ptr<FFT> make_heffte(int Ng, double Omega0, const MPIEnv& mpi,
-                                 BufferManager& buffer, Timer& timer, int method) {
+                                 BufferManager& buffer, Timer& timer, int method,
+                                 int fft_type, int pgroup) {
 #ifdef USE_HEFFTE
-    return std::make_unique<FFT_HEFFTE>(Ng, Omega0, mpi, buffer, timer, method);
+    const FFT_HEFFTE::Box box = (fft_type == 4) ? FFT_HEFFTE::Box::Pencil : FFT_HEFFTE::Box::Slab;
+    return std::make_unique<FFT_HEFFTE>(Ng, Omega0, mpi, buffer, timer, method, box, pgroup);
 #else
     (void)Ng; (void)Omega0; (void)buffer; (void)timer; (void)method;
+    (void)fft_type; (void)pgroup;
     if (mpi.world_rank() == 0) {
-        std::cerr << "--fft=heffte: このバイナリは heFFTe なしでビルドされています" << std::endl;
+        std::cerr << "--fft=heffte*: このバイナリは heFFTe なしでビルドされています" << std::endl;
     }
     MPI_Abort(MPI_COMM_WORLD, 1);
     return nullptr;
 #endif
+}
+
+// FFT の入力の形に合った Transpose を作る。
+//   slab  : FFTW, FFTE1D, heFFTe(slab)      relay 非対応（従来動作のまま）
+//   pencil: FFTE2D, heFFTe(pencil)
+void make_transposes(int fft_type, const Grid& grid, const FFT& fft, const MPIEnv& mpi,
+                     BufferManager& buffer, Timer& timer, int method, int relay,
+                     std::unique_ptr<TransposeFwd>& fwd, std::unique_ptr<TransposeBwd>& bwd) {
+    if (fft_type == 2 || fft_type == 4) {
+        fwd = std::make_unique<TransposeFwdPencil>(grid, fft, mpi, buffer, timer, method, relay);
+        bwd = std::make_unique<TransposeBwdPencil>(grid, fft, mpi, buffer, timer, method, relay);
+    } else {
+        fwd = std::make_unique<TransposeFwdSlab>(grid, fft, mpi, buffer, timer, method);
+        bwd = std::make_unique<TransposeBwdSlab>(grid, fft, mpi, buffer, timer, method);
+    }
 }
 
 } // namespace
@@ -161,7 +194,7 @@ int main(int argc, char** argv) {
     if (ng_s.empty()) {
         if (rank == 0) {
             std::cerr << "Usage: " << argv[0]
-                      << " --ng=N [--source=auto,input] [--fft=fftw,ffte1d,ffte2d,heffte]"
+                      << " --ng=N [--source=auto,input] [--fft=fftw,ffte1d,ffte2d,heffte-slab,heffte-pencil]"
                       << " [--method=1,2,3] [--np=N] [--root=DIR]"
                       << " [--pgroup=N] [--relay=0|1]" << std::endl;
         }
@@ -197,20 +230,18 @@ int main(int argc, char** argv) {
     const int all_loop = warm_up + loop;
     double a = 0.9;
 
-    // fft_type: 0=FFTW 1=FFTE1D 2=FFTE2D
     auto fft_name_of = [](int t) -> std::string {
-        return t == 0 ? "FFTW" : (t == 1 ? "FFTE1D" : (t == 2 ? "FFTE2D" : "HEFFTE"));
+        return fft_label(t);
     };
     auto fft_selected = [&](int t) {
-        return ffts.count(t == 0 ? "fftw" : (t == 1 ? "ffte1d" : (t == 2 ? "ffte2d" : "heffte"))) > 0;
+        return fft_requested(ffts, t);
     };
 
     // 1 サイクル（grid/particle 生成済み）に対し fft×method を回す
     auto run_combinations =
         [&](Grid& grid, Particle& particle, const std::string& source_name) {
         // grid/particle に依存する FFT/transpose は組み合わせごとに作り直す
-        int fft_sequence[] = {0, 1, 2, 3};
-        for (int fft_type : fft_sequence) {
+        for (int fft_type = 0; fft_type < kNumFftTypes; ++fft_type) {
             if (!fft_selected(fft_type)) continue;
             for (const std::string& m : {std::string("1"), std::string("2"), std::string("3")}) {
                 if (!methods.count(m)) continue;
@@ -227,18 +258,12 @@ int main(int argc, char** argv) {
                 else if (fft_type == 2)
                     fft = std::make_unique<FFT_FFTE2>(Ng, Omega0, mpi_env, buffer_manager, timer, method, pgroup);
                 else
-                    fft = make_heffte(Ng, Omega0, mpi_env, buffer_manager, timer, method);
+                    fft = make_heffte(Ng, Omega0, mpi_env, buffer_manager, timer, method, fft_type, pgroup);
 
                 std::unique_ptr<TransposeFwd> transpose_fwd;
                 std::unique_ptr<TransposeBwd> transpose_bwd;
-                if (fft_type != 2) {
-                    // slab は relay 非対応（従来動作のまま）
-                    transpose_fwd = std::make_unique<TransposeFwdSlab>(grid, *fft, mpi_env, buffer_manager, timer, method);
-                    transpose_bwd = std::make_unique<TransposeBwdSlab>(grid, *fft, mpi_env, buffer_manager, timer, method);
-                } else {
-                    transpose_fwd = std::make_unique<TransposeFwdPencil>(grid, *fft, mpi_env, buffer_manager, timer, method, relay);
-                    transpose_bwd = std::make_unique<TransposeBwdPencil>(grid, *fft, mpi_env, buffer_manager, timer, method, relay);
-                }
+                make_transposes(fft_type, grid, *fft, mpi_env, buffer_manager, timer, method, relay,
+                                transpose_fwd, transpose_bwd);
 
                 Interpolater interpolater(grid, particle, mpi_env, buffer_manager, timer);
                 buffer_manager.allocate(rank);
@@ -278,7 +303,10 @@ int main(int argc, char** argv) {
         Timer timer(warm_up, loop, rank);
 
         // 計測対象と同じ方式で暖機する
-        int wtype  = fft_selected(0) ? 0 : (fft_selected(1) ? 1 : (fft_selected(2) ? 2 : 3));
+        int wtype = 0;
+        for (int t = 0; t < kNumFftTypes; ++t) {
+            if (fft_selected(t)) { wtype = t; break; }
+        }
         int method = methods.count("1") ? 1 : (methods.count("2") ? 2 : 3);
 
         BufferManager buffer_manager;
@@ -292,17 +320,12 @@ int main(int argc, char** argv) {
         else if (wtype == 2)
             fft = std::make_unique<FFT_FFTE2>(Ng, Omega0, mpi_env, buffer_manager, timer, method, pgroup);
         else
-            fft = make_heffte(Ng, Omega0, mpi_env, buffer_manager, timer, method);
+            fft = make_heffte(Ng, Omega0, mpi_env, buffer_manager, timer, method, wtype, pgroup);
 
         std::unique_ptr<TransposeFwd> transpose_fwd;
         std::unique_ptr<TransposeBwd> transpose_bwd;
-        if (wtype != 2) {
-            transpose_fwd = std::make_unique<TransposeFwdSlab>(grid, *fft, mpi_env, buffer_manager, timer, method);
-            transpose_bwd = std::make_unique<TransposeBwdSlab>(grid, *fft, mpi_env, buffer_manager, timer, method);
-        } else {
-            transpose_fwd = std::make_unique<TransposeFwdPencil>(grid, *fft, mpi_env, buffer_manager, timer, method, relay);
-            transpose_bwd = std::make_unique<TransposeBwdPencil>(grid, *fft, mpi_env, buffer_manager, timer, method, relay);
-        }
+        make_transposes(wtype, grid, *fft, mpi_env, buffer_manager, timer, method, relay,
+                        transpose_fwd, transpose_bwd);
 
         ParticleAuto particle(Np3, grid, mpi_env);
         Interpolater interpolater(grid, particle, mpi_env, buffer_manager, timer);

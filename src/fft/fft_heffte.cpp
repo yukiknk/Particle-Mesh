@@ -4,11 +4,13 @@
 #include "debug.h"
 #include "grouping.h"
 
+#include <array>
 #include <cmath>
 #include <complex>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <string>
 #include <vector>
 #include <omp.h>
 
@@ -59,11 +61,13 @@ void dev_sync() { cuda_check(cudaDeviceSynchronize(), "cudaDeviceSynchronize"); 
 } // namespace
 #endif
 
+// ボックスは heFFTe の次元順で持つ: 次元0 = z（最も速い）, 次元1 = y, 次元2 = x（最も遅い）。
+// ホスト配列の添字 (x * ny + y) * nz + z と一致する。
 struct FFT_HEFFTE::Impl {
     std::unique_ptr<heffte::fft3d_r2c<backend_tag>> fft;
 
-    size_t n_real = 0;                              // local_n0 * Ng * Ng
-    size_t n_cplx = 0;                              // local_n0 * Ng * (Ng/2+1)
+    size_t n_real = 0;                              // nx * ny * nz
+    size_t n_cplx = 0;                              // nx * ny * nzc
 
     double* d_real = nullptr;                       // デバイス側
     std::complex<double>* d_cplx = nullptr;         // デバイス側
@@ -72,35 +76,68 @@ struct FFT_HEFFTE::Impl {
     std::vector<double> green;                      // ホスト側
 };
 
-FFT_HEFFTE::FFT_HEFFTE(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method)
-    : impl_(std::make_unique<Impl>()), timer_(timer), Ng_(Ng), world_rank_(mpi.world_rank())
+namespace {
+const char* box_name(FFT_HEFFTE::Box b) {
+    return b == FFT_HEFFTE::Box::Slab ? "slab" : "pencil";
+}
+} // namespace
+
+FFT_HEFFTE::FFT_HEFFTE(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method,
+                       Box box, int cap_override)
+    : impl_(std::make_unique<Impl>()), timer_(timer), Ng_(Ng), box_(box), world_rank_(mpi.world_rank())
 {
     t_fft_   = timer_.register_timer("FFT");
     t_ifft_  = timer_.register_timer("IFFT");
     t_green_ = timer_.register_timer("Green");
     t_copy_  = timer_.register_timer("FFT Host<->Dev Copy");
 
-    Grouping grouping(cap_for(Ng_), mpi, method);
+    auto die = [&](const std::string& msg) {
+        if (world_rank_ == 0) std::cerr << "FFT_HEFFTE(" << box_name(box_) << "): " << msg << std::endl;
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    };
+
+    cap_ = cap_for(Ng_, box_);
+    if (box_ == Box::Pencil && cap_override > 0) cap_ = cap_override;
+
+    Grouping grouping(cap_, mpi, method);
     color_ = grouping.color;
     const int local_rank = grouping.local_rank;
     const int group_size = grouping.group_size;
-
     MPI_Comm_split(MPI_COMM_WORLD, color_, local_rank, &comm_);
 
-    // Transpose は「グループ内ランク r が x = [r*local_n0, (r+1)*local_n0) を持つ」
-    // 等幅スラブを前提にしている。group_size は Ng を割り切る必要がある。
-    if (Ng_ % group_size != 0) {
-        if (world_rank_ == 0) {
-            std::cerr << "FFT_HEFFTE: group_size=" << group_size
-                      << " が Ng=" << Ng_ << " を割り切らない" << std::endl;
-        }
-        MPI_Abort(MPI_COMM_WORLD, 1);
-    }
-    local_n0_      = Ng_ / group_size;
-    local_0_start_ = static_cast<ptrdiff_t>(local_rank) * local_n0_;
+    nz_  = Ng_;
+    nzc_ = Ng_ / 2 + 1;
 
-    impl_->n_real = static_cast<size_t>(local_n0_) * Ng_ * Ng_;
-    impl_->n_cplx = static_cast<size_t>(local_n0_) * Ng_ * (Ng_ / 2 + 1);
+    if (box_ == Box::Slab) {
+        // Transpose は「グループ内ランク r が x = [r*n, (r+1)*n) を持つ」等幅スラブを前提にしている
+        if (Ng_ % group_size != 0) die("group_size が Ng を割り切らない");
+        nx_ = Ng_ / group_size;
+        x0_ = local_rank * nx_;
+        y0_ = 0; ny_ = Ng_;
+    } else {
+        // FFT_FFTE2 と同じ2次元分割（大きい方を x に割り当てる）
+        int dims[2] = {0, 0};
+        MPI_Dims_create(group_size, 2, dims);
+        const int npux = dims[0];
+        const int npuy = dims[1];
+        if (npux > Ng_ || npuy > Ng_ || Ng_ % npux != 0 || Ng_ % npuy != 0) {
+            die("pencil 分割 " + std::to_string(npux) + " x " + std::to_string(npuy) + " が Ng を割り切らない");
+        }
+        nx_ = Ng_ / npux;
+        ny_ = Ng_ / npuy;
+        x0_ = (local_rank / npuy) * nx_;
+        y0_ = (local_rank % npuy) * ny_;
+
+        ln0x_.resize(group_size); ln0y_.resize(group_size);
+        l0sx_.resize(group_size); l0sy_.resize(group_size);
+        MPI_Allgather(&nx_, 1, MPI_INT, ln0x_.data(), 1, MPI_INT, comm_);
+        MPI_Allgather(&ny_, 1, MPI_INT, ln0y_.data(), 1, MPI_INT, comm_);
+        MPI_Allgather(&x0_, 1, MPI_INT, l0sx_.data(), 1, MPI_INT, comm_);
+        MPI_Allgather(&y0_, 1, MPI_INT, l0sy_.data(), 1, MPI_INT, comm_);
+    }
+
+    impl_->n_real = static_cast<size_t>(nx_) * ny_ * nz_;
+    impl_->n_cplx = static_cast<size_t>(nx_) * ny_ * nzc_;
 
     // Transpose 側は 2 * local_alloc 個の double を FFT バッファとして扱う
     local_alloc_ = static_cast<ptrdiff_t>((impl_->n_real + 1) / 2);
@@ -109,24 +146,23 @@ FFT_HEFFTE::FFT_HEFFTE(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& 
     buffer.update_max_size(align_to_64(2 * static_cast<size_t>(local_alloc_)));
 
     if (color_ == 0) {
-        // Green 関数（波数空間、出力ボックスの並び: x が最も遅く、z(r2c 軸) が最も速い）
-        const int nzc = Ng_ / 2 + 1;
+        // Green 関数（波数空間ボックスの並び: x が最も遅く、z(r2c 軸) が最も速い）
         impl_->green.resize(impl_->n_cplx);
         double* green = impl_->green.data();
         const double pi_n = 2.0 * M_PI / Ng_;
-        const ptrdiff_t x_start = local_0_start_;
         #pragma omp parallel for collapse(2)
-        for (ptrdiff_t ix = 0; ix < local_n0_; ++ix) {
-            for (int iy = 0; iy < Ng_; ++iy) {
-                const ptrdiff_t gx = ix + x_start;
-                for (int kz = 0; kz < nzc; ++kz) {
-                    const size_t index = (static_cast<size_t>(ix) * Ng_ + iy) * nzc + kz;
-                    if (gx == 0 && iy == 0 && kz == 0) {
+        for (int ix = 0; ix < nx_; ++ix) {
+            for (int iy = 0; iy < ny_; ++iy) {
+                const int gx = ix + x0_;
+                const int gy = iy + y0_;
+                for (int kz = 0; kz < nzc_; ++kz) {
+                    const size_t index = (static_cast<size_t>(ix) * ny_ + iy) * nzc_ + kz;
+                    if (gx == 0 && gy == 0 && kz == 0) {
                         green[index] = 0.0;
                     } else {
                         green[index] = -3.0 * Omega0 / (
                             4.0 * static_cast<double>(Ng_) * Ng_ * Ng_ *
-                            (3.0 - cos(pi_n * gx) - cos(pi_n * iy) - cos(pi_n * kz))
+                            (3.0 - cos(pi_n * gx) - cos(pi_n * gy) - cos(pi_n * kz))
                         );
                     }
                 }
@@ -141,13 +177,11 @@ FFT_HEFFTE::FFT_HEFFTE(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& 
 void FFT_HEFFTE::create_plan() {
     if (color_ != 0) return;
 
-    // ホスト配列の添字は (x * Ng + y) * Ng + z。heFFTe の box3d は既定で
+    // ホスト配列の添字は (ix * ny + iy) * nz + iz。heFFTe の box3d は既定で
     // 次元0 が最も速く回るので、次元0 = z, 次元1 = y, 次元2 = x と対応させる。
-    const int x0 = static_cast<int>(local_0_start_);
-    const int x1 = static_cast<int>(local_0_start_ + local_n0_ - 1);
-    heffte::box3d<> inbox ({0, 0, x0}, {Ng_ - 1, Ng_ - 1, x1});
-    heffte::box3d<> outbox({0, 0, x0}, {Ng_ / 2, Ng_ - 1, x1});   // r2c は次元0 (z) を半分にする
-    const int r2c_direction = 0;
+    heffte::box3d<> inbox ({0, y0_, x0_}, {nz_ - 1,  y0_ + ny_ - 1, x0_ + nx_ - 1});
+    heffte::box3d<> outbox({0, y0_, x0_}, {nzc_ - 1, y0_ + ny_ - 1, x0_ + nx_ - 1});
+    const int r2c_direction = 0;    // 次元0 (z) を半分にする
 
     impl_->fft = std::make_unique<heffte::fft3d_r2c<backend_tag>>(inbox, outbox, r2c_direction, comm_);
 
@@ -167,8 +201,9 @@ void FFT_HEFFTE::create_plan() {
     MPI_Comm_rank(comm_, &rank);
     MPI_Comm_size(comm_, &size);
     if (rank == 0) {
-        std::cout << "heFFTe: backend=" << kBackendName << "  ranks=" << size
-                  << "  slab=" << local_n0_ << " x " << Ng_ << " x " << Ng_ << std::endl;
+        std::cout << "heFFTe: backend=" << kBackendName << "  box=" << box_name(box_)
+                  << "  ranks=" << size
+                  << "  local=" << nx_ << " x " << ny_ << " x " << nz_ << std::endl;
     }
 }
 
@@ -236,7 +271,9 @@ void FFT_HEFFTE::backward() {
     dev_to_host(real_, impl_->d_real, impl_->n_real * sizeof(double));
     timer_.stop(t_copy_, comm_);
 
-    if (pm_checksum_enabled()) pm_print_checksum("HEFFTE", real_, local_n0_, Ng_, Ng_, comm_);
+    if (pm_checksum_enabled()) {
+        pm_print_checksum("HEFFTE", real_, static_cast<size_t>(nx_) * ny_, nz_, nz_, comm_);
+    }
 
     if (world_rank_ == 0) {
         DEBUG_LOG("IFFT");

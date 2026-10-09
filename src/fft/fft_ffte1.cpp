@@ -5,6 +5,7 @@
 #include "debug.h"
 #include <omp.h>
 #include "grouping.h"
+#include "fft/fft_checksum.h"
 
 FFT_FFTE1::FFT_FFTE1(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method) 
     : timer_(timer), world_rank_(mpi.world_rank()), Ng_(Ng), stride_(Ng) {
@@ -110,6 +111,7 @@ void FFT_FFTE1::backward() {
         int IOPT = 2;
         pzdfft3d_(real_, calc_, &Ng_, &Ng_, &Ng_, &fortran_Comm_, &rank_, &size_, &IOPT);
         timer_.stop(t_ifft_, comm_);
+        if (pm_checksum_enabled()) pm_print_checksum("FFTE1D", real_, static_cast<size_t>(local_n0_) * Ng_, Ng_, stride_, comm_);
         if (world_rank_ == 0) {
             DEBUG_LOG("FFTE IFFT");
         }

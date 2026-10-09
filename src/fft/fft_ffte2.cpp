@@ -5,6 +5,7 @@
 #include <omp.h>
 #include "debug.h"
 #include "grouping.h"
+#include "fft/fft_checksum.h"
 
 FFT_FFTE2::FFT_FFTE2(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method, int cap_override)
     : timer_(timer),
@@ -160,6 +161,7 @@ void FFT_FFTE2::backward() {
                    &fortran_Comm_y_, &fortran_Comm_x_, &colory_,
                    &NPUY_, &NPUX_, &IOPT);
         timer_.stop(t_ifft_, comm_);
+        if (pm_checksum_enabled()) pm_print_checksum("FFTE2D", real_, static_cast<size_t>(local_n0_x_) * local_n0_y_, Ng_, stride_, comm_);
         if (world_rank_ == 0) {
             DEBUG_LOG("FFTE2 IFFT");
         }

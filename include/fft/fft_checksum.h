@@ -13,20 +13,18 @@ inline bool pm_checksum_enabled() {
     return e != nullptr && e[0] != '\0' && e[0] != '0';
 }
 
-// real: [n0][Ng][stride] の並び（有効なのは各行の先頭 Ng 個）
+// real: nrows 行 × stride 個の並び（有効なのは各行の先頭 ncols 個）
 inline void pm_print_checksum(const char* name, const double* real,
-                              std::ptrdiff_t n0, int Ng, int stride, MPI_Comm comm) {
+                              size_t nrows, int ncols, int stride, MPI_Comm comm) {
     double sum2 = 0.0, amax = 0.0;
-    #pragma omp parallel for collapse(2) reduction(+:sum2) reduction(max:amax)
-    for (std::ptrdiff_t i = 0; i < n0; ++i) {
-        for (int j = 0; j < Ng; ++j) {
-            const double* row = real + (static_cast<size_t>(i) * Ng + j) * stride;
-            for (int k = 0; k < Ng; ++k) {
-                const double v = row[k];
-                sum2 += v * v;
-                const double av = std::fabs(v);
-                if (av > amax) amax = av;
-            }
+    #pragma omp parallel for reduction(+:sum2) reduction(max:amax)
+    for (size_t r = 0; r < nrows; ++r) {
+        const double* row = real + r * static_cast<size_t>(stride);
+        for (int k = 0; k < ncols; ++k) {
+            const double v = row[k];
+            sum2 += v * v;
+            const double av = std::fabs(v);
+            if (av > amax) amax = av;
         }
     }
     double gsum2 = 0.0, gmax = 0.0;

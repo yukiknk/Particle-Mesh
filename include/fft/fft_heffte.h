@@ -12,9 +12,11 @@
 // heFFTe を使う FFT。実空間配列はホストに置き、forward / backward の中で
 // ホスト <-> GPU のコピーをする。Green 関数はホストで掛ける。
 //
-// heFFTe に渡す入力の形（Box）を2通り選べる。
-//   Slab   : x 方向のスラブ。既存の TransposeFwdSlab / TransposeBwdSlab を使う
-//   Pencil : x, y の2次元分割。既存の TransposeFwdPencil / TransposeBwdPencil を使う
+// heFFTe に渡す入力の形（Box）を2通り選べる。heFFTe の内部の回し方も同じ形に合わせる。
+//   Slab   : x 方向のスラブ。既存の TransposeFwdSlab / TransposeBwdSlab を使う。内部も slab
+//   Pencil : x, y の2次元分割。既存の TransposeFwdPencil / TransposeBwdPencil を使う。内部も pencil
+// FFTW (TRANSPOSED_OUT) や FFTE (IOPT=-2) と同じく、順変換の出力は転置された並びのままにし、
+// 入力の形へ戻す組み替えはしない（逆変換がその並びから始める）。
 // どちらでも、ホスト配列の添字は (ix * ny + iy) * nz + iz（z が最も速い）。
 //
 // 既定は GPU (heffte::backend::cufft)。-DPM_HEFFTE_CPU を付けてビルドすると
@@ -84,8 +86,24 @@ private:
     int x0_ = 0, nx_ = 0;
     int y0_ = 0, ny_ = 0;
     int nz_ = 0;
-    // 波数空間ボックス。x, y は実空間と同じ範囲、z (r2c 軸) は [0, nzc)、nzc = Ng/2 + 1
-    int nzc_ = 0;
+    // 波数空間ボックス（順変換の出力、逆変換の入力）。z は r2c 軸で全体は 0 .. Ng/2。
+    // 既定では実空間と違う分割（転置された並び）にして、入力の形へ戻す組み替えを省く。
+    //   Slab   : y 方向のスラブ（x と z は全体）
+    //   Pencil : x 方向に通った pencil（y と z で2次元分割）
+    // 添字は (ix * ony + iy) * onz + iz。
+    int ox0_ = 0, onx_ = 0;
+    int oy0_ = 0, ony_ = 0;
+    int oz0_ = 0, onz_ = 0;
+
+    // グループ内の分割（全ランクのボックスを作り直すのに使う）
+    int group_size_ = 1;
+    int local_rank_ = 0;
+    int npux_ = 1, npuy_ = 1;       // Pencil の2次元分割
+    bool transposed_out_ = true;    // false にすると出力を入力と同じ分割にする（比較用）
+
+    // グループ内ランク r の実空間 / 波数空間ボックス（{x0, nx, y0, ny, z0, nz}）
+    void real_box_of(int r, int b[6]) const;
+    void cplx_box_of(int r, int b[6]) const;
 
     ptrdiff_t local_alloc_ = 0;     // Transpose は 2 * local_alloc 個の double を FFT バッファとみなす
 

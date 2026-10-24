@@ -49,6 +49,8 @@ LIBS     += -L$(HEFFTE_LIB) -L$(MATH_LIB) -L$(CUDA_LIB) \
             -lheffte -lcufft -lcudart
 SRCS     += src/fft/fft_heffte.cpp
 
+HDRS = $(shell find include src -name "*.h")
+
 CPP_OBJS = $(SRCS:.cpp=.o)
 F_OBJS   = $(FSRCS:.f=.o)
 OBJS     = $(CPP_OBJS) $(F_OBJS)
@@ -58,7 +60,7 @@ all: $(TARGET)
 $(TARGET): $(OBJS)
 	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJS) $(LIBS)
 
-%.o: %.cpp
+%.o: %.cpp $(HDRS)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
 %.o: %.f

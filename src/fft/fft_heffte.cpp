@@ -77,6 +77,29 @@ struct FFT_HEFFTE::Impl {
 };
 
 namespace {
+// 環境変数を整数として読む。未設定や空なら fallback。
+int env_int(const char* name, int fallback) {
+    const char* e = std::getenv(name);
+    if (e == nullptr || e[0] == '\0') return fallback;
+    return std::atoi(e);
+}
+
+// PM_HEFFTE_ALG: 再分割の通信方法。0=alltoallv(既定) 1=alltoall 2=p2p 3=p2p_plined。名前でも指定できる。
+int env_alg(int fallback) {
+    const char* e = std::getenv("PM_HEFFTE_ALG");
+    if (e == nullptr || e[0] == '\0') return fallback;
+    const std::string v(e);
+    if (v == "alltoallv" || v == "0") return 0;
+    if (v == "alltoall"  || v == "1") return 1;
+    if (v == "p2p"       || v == "2") return 2;
+    if (v == "p2p_plined"|| v == "3") return 3;
+    return fallback;
+}
+
+const char* alg_name(int a) {
+    return a == 1 ? "alltoall" : (a == 2 ? "p2p" : (a == 3 ? "p2p_plined" : "alltoallv"));
+}
+
 const char* box_name(FFT_HEFFTE::Box b) {
     return b == FFT_HEFFTE::Box::Slab ? "slab" : "pencil";
 }
@@ -105,8 +128,18 @@ FFT_HEFFTE::FFT_HEFFTE(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& 
     const int group_size = grouping.group_size;
     MPI_Comm_split(MPI_COMM_WORLD, color_, local_rank, &comm_);
 
-    nz_  = Ng_;
-    nzc_ = Ng_ / 2 + 1;
+    group_size_ = group_size;
+    local_rank_ = local_rank;
+    nz_ = Ng_;
+
+    // 出力（波数空間）を転置された並びにするか。PM_HEFFTE_OUT=same で入力と同じ分割にする（比較用）。
+    // ランクごとに食い違わないよう、グループ内ランク 0 の値を全員に配る。
+    {
+        const char* e = std::getenv("PM_HEFFTE_OUT");
+        int t = (e != nullptr && std::string(e) == "same") ? 0 : 1;
+        MPI_Bcast(&t, 1, MPI_INT, 0, comm_);
+        transposed_out_ = (t != 0);
+    }
 
     if (box_ == Box::Slab) {
         // Transpose は「グループ内ランク r が x = [r*n, (r+1)*n) を持つ」等幅スラブを前提にしている
@@ -123,6 +156,8 @@ FFT_HEFFTE::FFT_HEFFTE(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& 
         if (npux > Ng_ || npuy > Ng_ || Ng_ % npux != 0 || Ng_ % npuy != 0) {
             die("pencil 分割 " + std::to_string(npux) + " x " + std::to_string(npuy) + " が Ng を割り切らない");
         }
+        npux_ = npux;
+        npuy_ = npuy;
         nx_ = Ng_ / npux;
         ny_ = Ng_ / npuy;
         x0_ = (local_rank / npuy) * nx_;
@@ -136,8 +171,16 @@ FFT_HEFFTE::FFT_HEFFTE(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& 
         MPI_Allgather(&y0_, 1, MPI_INT, l0sy_.data(), 1, MPI_INT, comm_);
     }
 
+    {
+        int b[6];
+        cplx_box_of(local_rank_, b);
+        ox0_ = b[0]; onx_ = b[1];
+        oy0_ = b[2]; ony_ = b[3];
+        oz0_ = b[4]; onz_ = b[5];
+    }
+
     impl_->n_real = static_cast<size_t>(nx_) * ny_ * nz_;
-    impl_->n_cplx = static_cast<size_t>(nx_) * ny_ * nzc_;
+    impl_->n_cplx = static_cast<size_t>(onx_) * ony_ * onz_;
 
     // Transpose 側は 2 * local_alloc 個の double を FFT バッファとして扱う
     local_alloc_ = static_cast<ptrdiff_t>((impl_->n_real + 1) / 2);
@@ -151,18 +194,19 @@ FFT_HEFFTE::FFT_HEFFTE(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& 
         double* green = impl_->green.data();
         const double pi_n = 2.0 * M_PI / Ng_;
         #pragma omp parallel for collapse(2)
-        for (int ix = 0; ix < nx_; ++ix) {
-            for (int iy = 0; iy < ny_; ++iy) {
-                const int gx = ix + x0_;
-                const int gy = iy + y0_;
-                for (int kz = 0; kz < nzc_; ++kz) {
-                    const size_t index = (static_cast<size_t>(ix) * ny_ + iy) * nzc_ + kz;
-                    if (gx == 0 && gy == 0 && kz == 0) {
+        for (int ix = 0; ix < onx_; ++ix) {
+            for (int iy = 0; iy < ony_; ++iy) {
+                const int gx = ix + ox0_;
+                const int gy = iy + oy0_;
+                for (int iz = 0; iz < onz_; ++iz) {
+                    const int gz = iz + oz0_;
+                    const size_t index = (static_cast<size_t>(ix) * ony_ + iy) * onz_ + iz;
+                    if (gx == 0 && gy == 0 && gz == 0) {
                         green[index] = 0.0;
                     } else {
                         green[index] = -3.0 * Omega0 / (
                             4.0 * static_cast<double>(Ng_) * Ng_ * Ng_ *
-                            (3.0 - cos(pi_n * gx) - cos(pi_n * gy) - cos(pi_n * kz))
+                            (3.0 - cos(pi_n * gx) - cos(pi_n * gy) - cos(pi_n * gz))
                         );
                     }
                 }
@@ -174,16 +218,100 @@ FFT_HEFFTE::FFT_HEFFTE(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& 
     }
 }
 
+// グループ内ランク r の実空間ボックス {x0, nx, y0, ny, z0, nz}
+void FFT_HEFFTE::real_box_of(int r, int b[6]) const {
+    if (box_ == Box::Slab) {
+        const int n = Ng_ / group_size_;
+        b[0] = r * n; b[1] = n;
+        b[2] = 0;     b[3] = Ng_;
+    } else {
+        const int n_x = Ng_ / npux_, n_y = Ng_ / npuy_;
+        b[0] = (r / npuy_) * n_x; b[1] = n_x;
+        b[2] = (r % npuy_) * n_y; b[3] = n_y;
+    }
+    b[4] = 0; b[5] = Ng_;
+}
+
+// グループ内ランク r の波数空間ボックス {x0, nx, y0, ny, z0, nz}（z は 0 .. Ng/2）
+void FFT_HEFFTE::cplx_box_of(int r, int b[6]) const {
+    const int nzc = Ng_ / 2 + 1;
+    if (!transposed_out_) {
+        // 入力と同じ分割（z だけ半分）
+        real_box_of(r, b);
+        b[4] = 0; b[5] = nzc;
+        return;
+    }
+    if (box_ == Box::Slab) {
+        // y 方向のスラブ。x と z は全体（FFTW の TRANSPOSED_OUT と同じ形）
+        const int n = Ng_ / group_size_;
+        b[0] = 0;     b[1] = Ng_;
+        b[2] = r * n; b[3] = n;
+        b[4] = 0;     b[5] = nzc;
+    } else {
+        // x 方向に通った pencil。y は入力と同じ npuy 分割、z (0 .. Ng/2) を npux 分割
+        const int cx = r / npuy_, cy = r % npuy_;
+        const int n_y = Ng_ / npuy_;
+        const int z_lo = static_cast<int>(static_cast<long long>(nzc) * cx / npux_);
+        const int z_hi = static_cast<int>(static_cast<long long>(nzc) * (cx + 1) / npux_);
+        b[0] = 0;         b[1] = Ng_;
+        b[2] = cy * n_y;  b[3] = n_y;
+        b[4] = z_lo;      b[5] = z_hi - z_lo;
+    }
+}
+
 void FFT_HEFFTE::create_plan() {
     if (color_ != 0) return;
 
     // ホスト配列の添字は (ix * ny + iy) * nz + iz。heFFTe の box3d は既定で
     // 次元0 が最も速く回るので、次元0 = z, 次元1 = y, 次元2 = x と対応させる。
-    heffte::box3d<> inbox ({0, y0_, x0_}, {nz_ - 1,  y0_ + ny_ - 1, x0_ + nx_ - 1});
-    heffte::box3d<> outbox({0, y0_, x0_}, {nzc_ - 1, y0_ + ny_ - 1, x0_ + nx_ - 1});
+    auto to_box = [](const int b[6]) {
+        return heffte::box3d<>({b[4], b[2], b[0]}, {b[4] + b[5] - 1, b[2] + b[3] - 1, b[0] + b[1] - 1});
+    };
+    int rb[6], cb[6];
+    real_box_of(local_rank_, rb);
+    cplx_box_of(local_rank_, cb);
+    heffte::box3d<> inbox  = to_box(rb);
+    heffte::box3d<> outbox = to_box(cb);
     const int r2c_direction = 0;    // 次元0 (z) を半分にする
 
-    impl_->fft = std::make_unique<heffte::fft3d_r2c<backend_tag>>(inbox, outbox, r2c_direction, comm_);
+    // heFFTe の内部の回し方。環境変数で切り替えられる（未設定なら下の既定値）。
+    //   PM_HEFFTE_PENCILS   : 1 = 内部を pencil で回す、0 = slab で回す。既定は渡す形に合わせる
+    //   PM_HEFFTE_REORDER   : 1 = 再分割のたびに並べ替える、0 = 並べ替えずに飛び飛びの FFT を使う
+    //   PM_HEFFTE_GPU_AWARE : 1 = GPU 上のデータをそのまま MPI に渡す、0 = いったんホストに移す
+    //   PM_HEFFTE_ALG       : alltoallv / alltoall / p2p / p2p_plined
+    // ランクごとに食い違わないよう、グループ内ランク 0 の値を全員に配る。
+    heffte::plan_options options = heffte::default_options<backend_tag>();
+    int opt[4] = {
+        env_int("PM_HEFFTE_PENCILS", box_ == Box::Pencil ? 1 : 0),
+        env_int("PM_HEFFTE_REORDER", options.use_reorder ? 1 : 0),
+        env_int("PM_HEFFTE_GPU_AWARE", options.use_gpu_aware ? 1 : 0),
+        env_alg(0),
+    };
+    MPI_Bcast(opt, 4, MPI_INT, 0, comm_);
+    options.use_pencils   = (opt[0] != 0);
+    options.use_reorder   = (opt[1] != 0);
+    options.use_gpu_aware = (opt[2] != 0);
+    options.algorithm     = opt[3] == 1 ? heffte::reshape_algorithm::alltoall
+                          : opt[3] == 2 ? heffte::reshape_algorithm::p2p
+                          : opt[3] == 3 ? heffte::reshape_algorithm::p2p_plined
+                                        : heffte::reshape_algorithm::alltoallv;
+
+    impl_->fft = std::make_unique<heffte::fft3d_r2c<backend_tag>>(inbox, outbox, r2c_direction, comm_, options);
+
+    // heFFTe が立てる計画を同じ入力で作り直し、形が変わる段（組み替え）の数を数える。表示用。
+    int num_reshapes = 0;
+    {
+        heffte::ioboxes<> all;
+        for (int r = 0; r < group_size_; ++r) {
+            int b[6];
+            real_box_of(r, b); all.in.push_back(to_box(b));
+            cplx_box_of(r, b); all.out.push_back(to_box(b));
+        }
+        const heffte::logic_plan3d<int> plan = heffte::plan_operations(all, r2c_direction, options, local_rank_);
+        for (int i = 0; i < 4; ++i) {
+            if (!heffte::match(plan.in_shape[i], plan.out_shape[i])) ++num_reshapes;
+        }
+    }
 
     if (static_cast<size_t>(impl_->fft->size_inbox())  != impl_->n_real ||
         static_cast<size_t>(impl_->fft->size_outbox()) != impl_->n_cplx) {
@@ -203,7 +331,11 @@ void FFT_HEFFTE::create_plan() {
     if (rank == 0) {
         std::cout << "heFFTe: backend=" << kBackendName << "  box=" << box_name(box_)
                   << "  ranks=" << size
-                  << "  local=" << nx_ << " x " << ny_ << " x " << nz_ << std::endl;
+                  << "  local=" << nx_ << " x " << ny_ << " x " << nz_
+                  << "  pencils=" << opt[0] << " reorder=" << opt[1]
+                  << " gpu_aware=" << opt[2] << " alg=" << alg_name(opt[3])
+                  << "  out=" << (transposed_out_ ? "transposed" : "same")
+                  << " reshapes=" << num_reshapes << std::endl;
     }
 }
 

@@ -1,3 +1,5 @@
+// 従来の OpenMP 版。-DPM_USE_KOKKOS のときは src/interpolater_kokkos.cpp を使う
+#ifndef PM_USE_KOKKOS
 #include "interpolater.h"
 #include "debug.h"
 
@@ -240,7 +242,9 @@ void Interpolater::gather(double a) {
     }
 
     timer_.stop(t_gather_, MPI_COMM_WORLD);
+    if (pm_checksum_enabled()) pm_print_velocity_checksum("GATHER", particle_, MPI_COMM_WORLD);
     if(world_rank_ == 0) {
         DEBUG_LOG("Gather");
     }
 }
+#endif  // PM_USE_KOKKOS

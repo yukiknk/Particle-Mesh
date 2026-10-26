@@ -5,3 +5,5 @@ docs_gemini
 make.log
 fftw_wisdom_*.dat
 old/
+kokkos/build/
+kokkos/build.log

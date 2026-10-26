@@ -49,6 +49,21 @@ LIBS     += -L$(HEFFTE_LIB) -L$(MATH_LIB) -L$(CUDA_LIB) \
             -lheffte -lcufft -lcudart
 SRCS     += src/fft/fft_heffte.cpp
 
+# ---- Kokkos 版 Interpolater（make -f Makefile.miyabi KOKKOS=1）----
+# src/interpolater_kokkos.cpp だけを nvcc_wrapper (g++) でビルドし、静的ライブラリとしてリンクする。
+# 実行時に PM_INTERP=gpu（既定）/ cpu で GPU / CPU を切り替える。
+KOKKOS ?= 0
+KOKKOS_DIR = /work/gu99/u99001/opt/kokkos
+KOKKOS_OMP_LIB ?=
+ifeq ($(KOKKOS),1)
+KOKKOS_LIBDIR = $(firstword $(wildcard $(KOKKOS_DIR)/lib64 $(KOKKOS_DIR)/lib))
+KOKKOS_BUILD  = kokkos/build
+KOKKOS_ALIB   = $(KOKKOS_BUILD)/libpm_interp_kokkos.a
+CXXFLAGS += -DPM_USE_KOKKOS
+LIBS     += $(KOKKOS_ALIB) $(KOKKOS_LIBDIR)/libkokkoscore.a $(KOKKOS_OMP_LIB) -lcudart -L$(CUDA_LIB)/stubs -lcuda -ldl
+EXTRA_DEPS = $(KOKKOS_ALIB)
+endif
+
 HDRS = $(shell find include src -name "*.h")
 
 CPP_OBJS = $(SRCS:.cpp=.o)
@@ -57,8 +72,16 @@ OBJS     = $(CPP_OBJS) $(F_OBJS)
 
 all: $(TARGET)
 
-$(TARGET): $(OBJS)
+$(TARGET): $(OBJS) $(EXTRA_DEPS)
 	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJS) $(LIBS)
+
+ifeq ($(KOKKOS),1)
+$(KOKKOS_ALIB): src/interpolater_kokkos.cpp $(HDRS) kokkos/CMakeLists.txt
+	NVCC_WRAPPER_DEFAULT_COMPILER=g++ cmake -S kokkos -B $(KOKKOS_BUILD) \
+	  -DCMAKE_CXX_COMPILER=$(KOKKOS_DIR)/bin/nvcc_wrapper -DCMAKE_BUILD_TYPE=Release \
+	  -DKokkos_ROOT=$(KOKKOS_DIR) "-DPM_MPI_INC=$(shell mpicxx --showme:incdirs | tr ' ' ';')" > $(KOKKOS_BUILD).log
+	NVCC_WRAPPER_DEFAULT_COMPILER=g++ cmake --build $(KOKKOS_BUILD)
+endif
 
 %.o: %.cpp $(HDRS)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
@@ -68,5 +91,6 @@ $(TARGET): $(OBJS)
 
 clean:
 	rm -f $(OBJS) $(TARGET)
+	rm -rf kokkos/build kokkos/build.log
 
 .PHONY: all clean

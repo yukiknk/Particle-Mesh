@@ -177,6 +177,9 @@ void make_transposes(int fft_type, const Grid& grid, const FFT& fft, const MPIEn
 
 int main(int argc, char** argv) {
     MPIEnv mpi_env(argc, argv);
+#ifdef PM_USE_KOKKOS
+    PmKokkosScope kokkos_scope(argc, argv);   // MPIEnv より後に作り、先に破棄する
+#endif
     const int rank = mpi_env.world_rank();
 
     // ---- 引数パース ----

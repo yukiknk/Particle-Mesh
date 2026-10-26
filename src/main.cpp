@@ -126,16 +126,19 @@ void print_config(int Ng, int world_size, int pgroup, int relay) {
 }
 
 // fft_type: 0=FFTW 1=FFTE1D 2=FFTE2D 3=heFFTe(slab) 4=heFFTe(pencil)
-const int kNumFftTypes = 5;
+//           5=heFFTe(slab) をデバイスモードで（共有バッファを GPU 上に置き、Transpose と粒子処理も GPU で回す。
+//             PM_USE_KOKKOS でビルドしたときだけ使える）
+const int kNumFftTypes = 6;
+const int kFftDevice = 5;
 
 const char* fft_label(int t) {
-    static const char* const names[] = {"FFTW", "FFTE1D", "FFTE2D", "HEFFTE_SLAB", "HEFFTE_PENCIL"};
+    static const char* const names[] = {"FFTW", "FFTE1D", "FFTE2D", "HEFFTE_SLAB", "HEFFTE_PENCIL", "HEFFTE_SLAB_GPU"};
     return names[t];
 }
 
 // --fft= に書かれた名前で選ばれているか。"heffte" は "heffte-slab" の別名。
 bool fft_requested(const std::set<std::string>& ffts, int t) {
-    static const char* const keys[] = {"fftw", "ffte1d", "ffte2d", "heffte-slab", "heffte-pencil"};
+    static const char* const keys[] = {"fftw", "ffte1d", "ffte2d", "heffte-slab", "heffte-pencil", "heffte-slab-gpu"};
     if (t == 3 && ffts.count("heffte")) return true;
     return ffts.count(keys[t]) > 0;
 }
@@ -155,6 +158,19 @@ std::unique_ptr<FFT> make_heffte(int Ng, double Omega0, const MPIEnv& mpi,
     }
     MPI_Abort(MPI_COMM_WORLD, 1);
     return nullptr;
+#endif
+}
+
+// デバイスモード（fft_type 5）のときは共有バッファを GPU 上に置く。部品を作る前に呼ぶ。
+void setup_buffer_mode(int fft_type, BufferManager& buffer, int rank) {
+    if (fft_type != kFftDevice) return;
+#ifdef PM_USE_KOKKOS
+    buffer.set_device(true);
+    (void)rank;
+#else
+    (void)buffer;
+    if (rank == 0) std::cerr << "--fft=heffte-slab-gpu: このバイナリは Kokkos なしでビルドされています（KOKKOS=1 でビルドする）" << std::endl;
+    MPI_Abort(MPI_COMM_WORLD, 1);
 #endif
 }
 
@@ -197,7 +213,7 @@ int main(int argc, char** argv) {
     if (ng_s.empty()) {
         if (rank == 0) {
             std::cerr << "Usage: " << argv[0]
-                      << " --ng=N [--source=auto,input] [--fft=fftw,ffte1d,ffte2d,heffte-slab,heffte-pencil]"
+                      << " --ng=N [--source=auto,input] [--fft=fftw,ffte1d,ffte2d,heffte-slab,heffte-pencil,heffte-slab-gpu]"
                       << " [--method=1,2,3] [--np=N] [--root=DIR]"
                       << " [--pgroup=N] [--relay=0|1]" << std::endl;
         }
@@ -252,6 +268,7 @@ int main(int argc, char** argv) {
 
                 Timer timer(warm_up, loop, rank);
                 BufferManager buffer_manager;
+                setup_buffer_mode(fft_type, buffer_manager, rank);
 
                 std::unique_ptr<FFT> fft;
                 if (fft_type == 0)
@@ -313,6 +330,7 @@ int main(int argc, char** argv) {
         int method = methods.count("1") ? 1 : (methods.count("2") ? 2 : 3);
 
         BufferManager buffer_manager;
+        setup_buffer_mode(wtype, buffer_manager, rank);
         GridAuto grid(Ng, mpi_env);
 
         std::unique_ptr<FFT> fft;

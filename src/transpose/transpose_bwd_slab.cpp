@@ -175,12 +175,20 @@ TransposeBwdSlab::TransposeBwdSlab(const Grid& grid, const FFT& fft, const MPIEn
         }
     }
 
+    device_ = buffer.is_device();
+#ifdef PM_USE_KOKKOS
+    if (device_) d_src_ = pm_dev_upload_index(pos0_);
+#endif
+
     if (world_rank_ == 0) {
         DEBUG_LOG("Set TransposeBwd");
     }
 }
 
 TransposeBwdSlab::~TransposeBwdSlab() {
+#ifdef PM_USE_KOKKOS
+    pm_dev_free(d_src_);
+#endif
     if (group_comm_ != MPI_COMM_NULL) MPI_Comm_free(&group_comm_);
     if (bcast_comm_ != MPI_COMM_NULL) MPI_Comm_free(&bcast_comm_);
 }
@@ -215,6 +223,13 @@ void TransposeBwdSlab::broadcast() {
 void TransposeBwdSlab::reorder() {
     // fwd の reorder() の逆方向: fftbuf_ → sendbuf_ へデータを並べ替え
     timer_.start(MPI_COMM_WORLD);
+#ifdef PM_USE_KOKKOS
+    if (device_) {
+        pm_dev_gather_index(sendbuf_, fftbuf_, d_src_, send_total_);
+        timer_.stop(t_calc_, MPI_COMM_WORLD);
+        return;
+    }
+#endif
 
     const size_t N = send_total_;
     const size_t* __restrict src_idx = pos0_.data();

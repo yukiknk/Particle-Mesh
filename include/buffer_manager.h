@@ -5,9 +5,16 @@
 #include <iostream>
 #include <mpi.h>
 #include "debug.h"
+#include "pm_device.h"
 
 class BufferManager {
 public:
+    // true にすると共有バッファをデバイス（GPU）上に確保する（--fft=heffte-slab-gpu 用）。
+    // 各部品はコンストラクタで is_device() を見て、ホスト用とデバイス用の処理を選ぶので、
+    // 部品を作る前に呼ぶこと。PM_USE_KOKKOS でビルドしたときだけ使える。
+    void set_device(bool on) { device_ = on; }
+    bool is_device() const { return device_; }
+
     void update_max_size(size_t size) {
         if (size > max_size_) {
             max_size_ = size;
@@ -29,6 +36,11 @@ public:
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
         
+#ifdef PM_USE_KOKKOS
+        if (device_) {
+            data_ = static_cast<double*>(pm_dev_alloc(max_size_ * sizeof(double)));
+        } else
+#endif
         data_ = static_cast<double*>(std::aligned_alloc(64, max_size_ * sizeof(double)));
         
         if (data_ == nullptr) {
@@ -47,6 +59,9 @@ public:
     }
 
     ~BufferManager() {
+#ifdef PM_USE_KOKKOS
+        if (device_) { pm_dev_free(data_); return; }
+#endif
         std::free(data_);
     }
     
@@ -64,4 +79,5 @@ private:
     std::vector<Registration> registrations_;
     size_t max_size_ = 0;
     double* data_ = nullptr;
+    bool device_ = false;
 };

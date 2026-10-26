@@ -139,12 +139,26 @@ TransposeFwdSlab::TransposeFwdSlab(const Grid& grid, const FFT& fft, const MPIEn
     }
     seg_.push_back(recv_total);
 
+    device_ = buffer.is_device();
+#ifdef PM_USE_KOKKOS
+    if (device_) {
+        d_key_ = pm_dev_upload_index(pos0_);
+        d_idx_ = pm_dev_upload_index(pos1_);
+        d_seg_ = pm_dev_upload_index(seg_);
+    }
+#endif
+
     if(world_rank_ == 0) {
         DEBUG_LOG("Set TransposeFwd");
     }
 }
 
 TransposeFwdSlab::~TransposeFwdSlab() {
+#ifdef PM_USE_KOKKOS
+    pm_dev_free(d_key_);
+    pm_dev_free(d_idx_);
+    pm_dev_free(d_seg_);
+#endif
     if (group_comm_ != MPI_COMM_NULL) MPI_Comm_free(&group_comm_);
     if (reduce_comm_ != MPI_COMM_NULL) MPI_Comm_free(&reduce_comm_);
 }
@@ -178,6 +192,14 @@ void TransposeFwdSlab::alltoallv() {
 
 void TransposeFwdSlab::reorder() {
     timer_.start(MPI_COMM_WORLD);
+#ifdef PM_USE_KOKKOS
+    if (device_) {
+        pm_dev_zero(fftbuf_, fft_buf_size_);
+        pm_dev_fwd_reorder(fftbuf_, recvbuf_, d_seg_, d_idx_, d_key_, seg_.size() - 1);
+        timer_.stop(t_calc_, MPI_COMM_WORLD);
+        return;
+    }
+#endif
     const size_t S = seg_.size() - 1;
     const size_t* __restrict seg = seg_.data();
     const size_t* __restrict idx = pos1_.data();

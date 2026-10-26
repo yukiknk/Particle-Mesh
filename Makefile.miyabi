@@ -76,7 +76,7 @@ $(TARGET): $(OBJS) $(EXTRA_DEPS)
 	$(CXX) $(CXXFLAGS) -o $(TARGET) $(OBJS) $(LIBS)
 
 ifeq ($(KOKKOS),1)
-$(KOKKOS_ALIB): src/interpolater_kokkos.cpp $(HDRS) kokkos/CMakeLists.txt
+$(KOKKOS_ALIB): src/interpolater_kokkos.cpp src/pm_device.cpp $(HDRS) kokkos/CMakeLists.txt
 	NVCC_WRAPPER_DEFAULT_COMPILER=g++ cmake -S kokkos -B $(KOKKOS_BUILD) \
 	  -DCMAKE_CXX_COMPILER=$(KOKKOS_DIR)/bin/nvcc_wrapper -DCMAKE_BUILD_TYPE=Release \
 	  -DKokkos_ROOT=$(KOKKOS_DIR) "-DPM_MPI_INC=$(shell mpicxx --showme:incdirs | tr ' ' ';')" > $(KOKKOS_BUILD).log

@@ -14,6 +14,9 @@
 //     コピーの時間は "Interpolater Copy" として別に測る。
 //   - deposit でコピーした粒子座標は、同じイテレーションの gather でもそのまま使う
 //     （deposit と gather の間で粒子は動かないため）。
+//   - デバイスモード（BufferManager::is_device()、--fft=heffte-slab-gpu）では共有バッファが GPU 上にあり、
+//     格子のコピーが要らない。粒子の座標と速度も最初に一度だけ GPU に送り、以後は GPU に置いたままにする
+//     （速度は Interpolater を破棄するときにホストへ書き戻す）。
 #ifdef PM_USE_KOKKOS
 #include <Kokkos_Core.hpp>
 #include <Kokkos_ScatterView.hpp>
@@ -37,6 +40,9 @@ template <class Mem>
 using Arr = Kokkos::View<double*, Kokkos::LayoutRight, Mem>;   // CUDA の既定 LayoutLeft と揃わないので明示
 // 既存のホスト配列（Particle、共有バッファ）をそのまま Kokkos から触るためのビュー
 using HostWrap = Kokkos::View<double*, Kokkos::HostSpace, Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
+// 共有バッファが GPU 上にあるとき（デバイスモード）に、それをそのまま Kokkos から触るためのビュー
+using DevWrap = Kokkos::View<double*, Kokkos::LayoutRight, Kokkos::DefaultExecutionSpace::memory_space,
+                             Kokkos::MemoryTraits<Kokkos::Unmanaged>>;
 
 namespace KE = Kokkos::Experimental;
 using HostDevice = Kokkos::Device<HostExec, HostMem>;
@@ -171,6 +177,7 @@ PmKokkosScope::~PmKokkosScope() {
 // ------------------------------------------------------------------ 中身
 struct Interpolater::KImpl {
     bool gpu = true;
+    bool resident = false;            // デバイスモード: 粒子と格子を GPU に置いたまま
     bool atomic_cpu = false;          // CPU で atomic を使うか（PM_DEPOSIT=atomic）
     Geometry g{};
     int64_t np = 0;
@@ -218,6 +225,11 @@ Interpolater::Interpolater(const Grid& grid, Particle& particle, const MPIEnv& m
 
     KImpl& k = *kimpl_;
     k.gpu = use_gpu_from_env();
+    k.resident = buffer.is_device();
+    if (k.resident && !k.gpu) {
+        if (world_rank_ == 0) std::fprintf(stderr, "Interpolater: デバイスモードでは PM_INTERP=cpu は使えない\n");
+        MPI_Abort(MPI_COMM_WORLD, 1);
+    }
     k.atomic_cpu = use_atomic_deposit_from_env();
     k.g = Geometry{x0_, y0_, z0_, static_cast<int>(ny_ghost_), static_cast<int>(nz_ghost_),
                    ny3_, nz3_, static_cast<int64_t>(ncell_local_), mass_};
@@ -231,11 +243,21 @@ Interpolater::Interpolater(const Grid& grid, Particle& particle, const MPIEnv& m
         k.vy = Arr<DevMem>(Kokkos::view_alloc("vy", Kokkos::WithoutInitializing), k.np);
         k.vz = Arr<DevMem>(Kokkos::view_alloc("vz", Kokkos::WithoutInitializing), k.np);
         k.rho = Arr<DevMem>("rho", ncell_local_);
-        k.ext = Arr<DevMem>(Kokkos::view_alloc("ext", Kokkos::WithoutInitializing), ext_size_);
+        if (!k.resident)   // デバイスモードでは共有バッファ（GPU 上）を直接読むので要らない
+            k.ext = Arr<DevMem>(Kokkos::view_alloc("ext", Kokkos::WithoutInitializing), ext_size_);
         k.gx = Arr<DevMem>("gx", ncell_local_);
         k.gy = Arr<DevMem>("gy", ncell_local_);
         k.gz = Arr<DevMem>("gz", ncell_local_);
         k.sv_dev = SVDev(k.rho);
+        if (k.resident) {
+            // 粒子は最初に一度だけ GPU に送る
+            Kokkos::deep_copy(k.x,  HostWrap(particle_.x,  k.np));
+            Kokkos::deep_copy(k.y,  HostWrap(particle_.y,  k.np));
+            Kokkos::deep_copy(k.z,  HostWrap(particle_.z,  k.np));
+            Kokkos::deep_copy(k.vx, HostWrap(particle_.vx, k.np));
+            Kokkos::deep_copy(k.vy, HostWrap(particle_.vy, k.np));
+            Kokkos::deep_copy(k.vz, HostWrap(particle_.vz, k.np));
+        }
     } else {
         k.hrho = Arr<HostMem>("hrho", ncell_local_);
         if (k.atomic_cpu) k.sv_host_atomic = SVHostAtomic(k.hrho);
@@ -246,22 +268,40 @@ Interpolater::Interpolater(const Grid& grid, Particle& particle, const MPIEnv& m
     }
 
     if (world_rank_ == 0) {
-        std::printf("Interpolater: Kokkos %s (PM_INTERP=%s, deposit=%s)\n",
+        std::printf("Interpolater: Kokkos %s (PM_INTERP=%s, deposit=%s, data=%s)\n",
                     k.gpu ? DevExec::name() : HostExec::name(), k.gpu ? "gpu" : "cpu",
-                    k.gpu ? "atomic" : (k.atomic_cpu ? "atomic" : "duplicated"));
+                    k.gpu ? "atomic" : (k.atomic_cpu ? "atomic" : "duplicated"),
+                    k.resident ? "device" : "host");
         std::fflush(stdout);
         DEBUG_LOG("Set Interpolater (Kokkos)");
     }
 }
 
-Interpolater::~Interpolater() = default;
+Interpolater::~Interpolater() {
+    // デバイスモード: GPU に置いていた速度をホストへ書き戻す（次の run や照合のため）
+    if (kimpl_ && kimpl_->resident) {
+        KImpl& k = *kimpl_;
+        Kokkos::deep_copy(HostWrap(particle_.vx, k.np), k.vx);
+        Kokkos::deep_copy(HostWrap(particle_.vy, k.np), k.vy);
+        Kokkos::deep_copy(HostWrap(particle_.vz, k.np), k.vz);
+    }
+}
 
 void Interpolater::deposit() {
     KImpl& k = *kimpl_;
     HostWrap hx(particle_.x, k.np), hy(particle_.y, k.np), hz(particle_.z, k.np);
     HostWrap hrho(buf_, ncell_local_);
 
-    if (k.gpu) {
+    if (k.resident) {
+        timer_.start(MPI_COMM_WORLD);
+        Kokkos::deep_copy(DevExec(), k.rho, 0.0);
+        k.sv_dev.reset();
+        deposit_kernel<DevExec>(k.x, k.y, k.z, k.sv_dev, k.np, k.g);
+        KE::contribute(k.rho, k.sv_dev);
+        Kokkos::deep_copy(DevExec(), DevWrap(buf_, ncell_local_), k.rho);   // GPU 上の共有バッファへ
+        DevExec().fence();
+        timer_.stop(t_deposit_, MPI_COMM_WORLD);
+    } else if (k.gpu) {
         timer_.start(MPI_COMM_WORLD);
         Kokkos::deep_copy(k.x, hx);
         Kokkos::deep_copy(k.y, hy);
@@ -307,7 +347,19 @@ void Interpolater::gather(double a) {
     HostWrap hext(buf_, ext_size_);
     HostWrap hvx(particle_.vx, k.np), hvy(particle_.vy, k.np), hvz(particle_.vz, k.np);
 
-    if (k.gpu) {
+    if (k.resident) {
+        timer_.start(MPI_COMM_WORLD);
+        gradient_kernel<DevExec>(DevWrap(buf_, ext_size_), k.gx, k.gy, k.gz, k.g);
+        gather_kernel<DevExec>(k.x, k.y, k.z, k.gx, k.gy, k.gz, k.vx, k.vy, k.vz, k.np, k.g, fa_da);
+        DevExec().fence();
+        timer_.stop(t_gather_, MPI_COMM_WORLD);
+        if (pm_checksum_enabled()) {
+            // 照合用に速度をホストへ写す（計測には含めない）
+            Kokkos::deep_copy(hvx, k.vx);
+            Kokkos::deep_copy(hvy, k.vy);
+            Kokkos::deep_copy(hvz, k.vz);
+        }
+    } else if (k.gpu) {
         timer_.start(MPI_COMM_WORLD);
         Kokkos::deep_copy(k.ext, hext);
         Kokkos::deep_copy(k.vx, hvx);

@@ -74,6 +74,12 @@ void pm_dev_gather_index(double* send, const double* fftbuf, const size_t* src, 
     Exec().fence();
 }
 
+void pm_dev_scatter_index(double* dst, const double* src, const size_t* idx, size_t n) {
+    Kokkos::parallel_for("PM::scatter_index", Policy(0, static_cast<int64_t>(n)),
+        KOKKOS_LAMBDA(const int64_t i) { dst[idx[i]] = src[i]; });
+    Exec().fence();
+}
+
 void pm_dev_scale_complex(double* c, const double* green, size_t n, double factor) {
     Kokkos::parallel_for("PM::green", Policy(0, static_cast<int64_t>(n)),
         KOKKOS_LAMBDA(const int64_t i) {

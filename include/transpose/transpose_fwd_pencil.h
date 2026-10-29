@@ -76,4 +76,13 @@ private:
     double* sendbuf_ = nullptr;
     double* recvbuf_ = nullptr;
     double* fftbuf_ = nullptr;
+
+    // デバイスモード（BufferManager::is_device()）: 通信は GPU-aware MPI、並べ替えは GPU。
+    // 送信側の塊コピーは1要素ずつの添字表（sendbuf[i] = rhobuf[d_send_[i]]）にしてデバイスに置く。
+    bool device_ = false;
+    size_t send_total_ = 0;
+    size_t* d_send_ = nullptr;
+    size_t* d_key_ = nullptr;   // pos0_
+    size_t* d_idx_ = nullptr;   // pos1_
+    size_t* d_seg_ = nullptr;   // seg_
 };

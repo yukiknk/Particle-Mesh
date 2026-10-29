@@ -206,10 +206,37 @@ TransposeFwdPencil::TransposeFwdPencil::TransposeFwdPencil(const Grid& grid, con
     }
     seg_.push_back(recv_total);
 
+    device_ = buffer.is_device();
+    send_total_ = send_total;
+#ifdef PM_USE_KOKKOS
+    if (device_) {
+        // 塊コピーの指示を、送信バッファ1要素ごとの読み出し位置に展開する
+        std::vector<size_t> send_idx(send_total);
+        for (size_t i = 0; i < send_nx_.size(); ++i) {
+            const size_t row = static_cast<size_t>(send_ny_[i]);
+            for (int j = 0; j < send_nx_[i]; ++j) {
+                const size_t d = send_dst_[i] + j * row;
+                const size_t s0 = send_src_[i] + j * slice_;
+                for (size_t c = 0; c < row; ++c) send_idx[d + c] = s0 + c;
+            }
+        }
+        d_send_ = pm_dev_upload_index(send_idx);
+        d_key_ = pm_dev_upload_index(pos0_);
+        d_idx_ = pm_dev_upload_index(pos1_);
+        d_seg_ = pm_dev_upload_index(seg_);
+    }
+#endif
+
     if (world_rank_ == 0) DEBUG_LOG("Set TransposeFwdPencil");
 }
 
 TransposeFwdPencil::~TransposeFwdPencil() {
+#ifdef PM_USE_KOKKOS
+    pm_dev_free(d_send_);
+    pm_dev_free(d_key_);
+    pm_dev_free(d_idx_);
+    pm_dev_free(d_seg_);
+#endif
     if (group_comm_ != MPI_COMM_NULL) MPI_Comm_free(&group_comm_);
     if (reduce_comm_ != MPI_COMM_NULL) MPI_Comm_free(&reduce_comm_);
 }
@@ -232,6 +259,13 @@ void TransposeFwdPencil::execute() {
 
 void TransposeFwdPencil::reorder_for_alltoallv() {
     timer_.start(MPI_COMM_WORLD);
+#ifdef PM_USE_KOKKOS
+    if (device_) {
+        pm_dev_gather_index(sendbuf_, rhobuf_, d_send_, send_total_);
+        timer_.stop(t_calc_, MPI_COMM_WORLD);
+        return;
+    }
+#endif
 
     const size_t N = send_nx_.size();
 
@@ -268,6 +302,14 @@ void TransposeFwdPencil::alltoallv() {
 
 void TransposeFwdPencil::reorder_for_fft() {
     timer_.start(MPI_COMM_WORLD);
+#ifdef PM_USE_KOKKOS
+    if (device_) {
+        pm_dev_zero(fftbuf_, fft_buf_size_);
+        pm_dev_fwd_reorder(fftbuf_, recvbuf_, d_seg_, d_idx_, d_key_, seg_.size() - 1);
+        timer_.stop(t_calc_, MPI_COMM_WORLD);
+        return;
+    }
+#endif
 
     const size_t S = seg_.size() - 1;
     const size_t* __restrict seg = seg_.data();

@@ -21,6 +21,8 @@ void pm_dev_fwd_reorder(double* fftbuf, const double* recv, const size_t* seg, c
                         const size_t* key, size_t nseg);
 // TransposeBwdSlab::reorder: send[i] = fftbuf[src[i]]
 void pm_dev_gather_index(double* send, const double* fftbuf, const size_t* src, size_t n);
+// TransposeBwdPencil::reorder_from_alltoallv: dst[idx[i]] = src[i]（dst は先に 0 にしておく）
+void pm_dev_scatter_index(double* dst, const double* src, const size_t* idx, size_t n);
 // Green 関数: 複素数 c[i] (= 実部虚部の2つ並び) に green[i] * factor を掛ける
 void pm_dev_scale_complex(double* c, const double* green, size_t n, double factor);
 #endif

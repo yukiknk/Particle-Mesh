@@ -238,6 +238,14 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
         bwd_copy_len_.push_back(len);
     }
 
+    device_ = buffer.is_device();
+#ifdef PM_USE_KOKKOS
+    if (device_) {
+        d_pos0_ = pm_dev_upload_index(pos0_);
+        d_pos1_ = pm_dev_upload_index(pos1_);
+    }
+#endif
+
     if (world_rank_ == 0) {
         DEBUG_LOG(std::string("Set TransposeBwdPencil (relay=")
                   + (relay_ ? "on" : "off") + ")");
@@ -273,6 +281,13 @@ void TransposeBwdPencil::broadcast() {
 
 void TransposeBwdPencil::reorder_from_fft() {
     timer_.start(MPI_COMM_WORLD);
+#ifdef PM_USE_KOKKOS
+    if (device_) {
+        pm_dev_gather_index(sendbuf_, fftbuf_, d_pos0_, send_total_);
+        timer_.stop(t_calc_, MPI_COMM_WORLD);
+        return;
+    }
+#endif
 
     const size_t M = fwd_copy_len_.size();
     const size_t* __restrict cdst = fwd_copy_dst_.data();
@@ -300,6 +315,14 @@ void TransposeBwdPencil::alltoallv() {
 
 void TransposeBwdPencil::reorder_from_alltoallv() {
     timer_.start(MPI_COMM_WORLD);
+#ifdef PM_USE_KOKKOS
+    if (device_) {
+        pm_dev_zero(gridbuf_, static_cast<size_t>(nx3_) * ny3_ * nz3_);
+        pm_dev_scatter_index(gridbuf_, recvbuf_, d_pos1_, recv_total_);
+        timer_.stop(t_calc_, MPI_COMM_WORLD);
+        return;
+    }
+#endif
 
     std::memset(gridbuf_, 0, static_cast<size_t>(nx3_) * ny3_ * nz3_ * sizeof(double));
 
@@ -317,6 +340,10 @@ void TransposeBwdPencil::reorder_from_alltoallv() {
 }
 
 TransposeBwdPencil::~TransposeBwdPencil() {
+#ifdef PM_USE_KOKKOS
+    pm_dev_free(d_pos0_);
+    pm_dev_free(d_pos1_);
+#endif
     // a2a_comm_ は group_comm_ か MPI_COMM_WORLD の借り物なので free しない
     if (group_comm_ != MPI_COMM_NULL) MPI_Comm_free(&group_comm_);
     if (broadcast_comm_ != MPI_COMM_NULL) MPI_Comm_free(&broadcast_comm_);

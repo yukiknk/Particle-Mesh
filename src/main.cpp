@@ -126,19 +126,19 @@ void print_config(int Ng, int world_size, int pgroup, int relay) {
 }
 
 // fft_type: 0=FFTW 1=FFTE1D 2=FFTE2D 3=heFFTe(slab) 4=heFFTe(pencil)
-//           5=heFFTe(slab) をデバイスモードで（共有バッファを GPU 上に置き、Transpose と粒子処理も GPU で回す。
-//             PM_USE_KOKKOS でビルドしたときだけ使える）
-const int kNumFftTypes = 6;
-const int kFftDevice = 5;
+//           5=heFFTe(slab)、6=heFFTe(pencil) をデバイスモードで（共有バッファを GPU 上に置き、
+//             Transpose と粒子処理も GPU で回す。PM_USE_KOKKOS でビルドしたときだけ使える）
+const int kNumFftTypes = 7;
+bool is_device_fft(int t) { return t == 5 || t == 6; }
 
 const char* fft_label(int t) {
-    static const char* const names[] = {"FFTW", "FFTE1D", "FFTE2D", "HEFFTE_SLAB", "HEFFTE_PENCIL", "HEFFTE_SLAB_GPU"};
+    static const char* const names[] = {"FFTW", "FFTE1D", "FFTE2D", "HEFFTE_SLAB", "HEFFTE_PENCIL", "HEFFTE_SLAB_GPU", "HEFFTE_PENCIL_GPU"};
     return names[t];
 }
 
 // --fft= に書かれた名前で選ばれているか。"heffte" は "heffte-slab" の別名。
 bool fft_requested(const std::set<std::string>& ffts, int t) {
-    static const char* const keys[] = {"fftw", "ffte1d", "ffte2d", "heffte-slab", "heffte-pencil", "heffte-slab-gpu"};
+    static const char* const keys[] = {"fftw", "ffte1d", "ffte2d", "heffte-slab", "heffte-pencil", "heffte-slab-gpu", "heffte-pencil-gpu"};
     if (t == 3 && ffts.count("heffte")) return true;
     return ffts.count(keys[t]) > 0;
 }
@@ -148,7 +148,7 @@ std::unique_ptr<FFT> make_heffte(int Ng, double Omega0, const MPIEnv& mpi,
                                  BufferManager& buffer, Timer& timer, int method,
                                  int fft_type, int pgroup) {
 #ifdef USE_HEFFTE
-    const FFT_HEFFTE::Box box = (fft_type == 4) ? FFT_HEFFTE::Box::Pencil : FFT_HEFFTE::Box::Slab;
+    const FFT_HEFFTE::Box box = (fft_type == 4 || fft_type == 6) ? FFT_HEFFTE::Box::Pencil : FFT_HEFFTE::Box::Slab;
     return std::make_unique<FFT_HEFFTE>(Ng, Omega0, mpi, buffer, timer, method, box, pgroup);
 #else
     (void)Ng; (void)Omega0; (void)buffer; (void)timer; (void)method;
@@ -161,15 +161,15 @@ std::unique_ptr<FFT> make_heffte(int Ng, double Omega0, const MPIEnv& mpi,
 #endif
 }
 
-// デバイスモード（fft_type 5）のときは共有バッファを GPU 上に置く。部品を作る前に呼ぶ。
+// デバイスモード（fft_type 5, 6）のときは共有バッファを GPU 上に置く。部品を作る前に呼ぶ。
 void setup_buffer_mode(int fft_type, BufferManager& buffer, int rank) {
-    if (fft_type != kFftDevice) return;
+    if (!is_device_fft(fft_type)) return;
 #ifdef PM_USE_KOKKOS
     buffer.set_device(true);
     (void)rank;
 #else
     (void)buffer;
-    if (rank == 0) std::cerr << "--fft=heffte-slab-gpu: このバイナリは Kokkos なしでビルドされています（KOKKOS=1 でビルドする）" << std::endl;
+    if (rank == 0) std::cerr << "--fft=heffte-*-gpu: このバイナリは Kokkos なしでビルドされています（KOKKOS=1 でビルドする）" << std::endl;
     MPI_Abort(MPI_COMM_WORLD, 1);
 #endif
 }
@@ -180,7 +180,7 @@ void setup_buffer_mode(int fft_type, BufferManager& buffer, int rank) {
 void make_transposes(int fft_type, const Grid& grid, const FFT& fft, const MPIEnv& mpi,
                      BufferManager& buffer, Timer& timer, int method, int relay,
                      std::unique_ptr<TransposeFwd>& fwd, std::unique_ptr<TransposeBwd>& bwd) {
-    if (fft_type == 2 || fft_type == 4) {
+    if (fft_type == 2 || fft_type == 4 || fft_type == 6) {
         fwd = std::make_unique<TransposeFwdPencil>(grid, fft, mpi, buffer, timer, method, relay);
         bwd = std::make_unique<TransposeBwdPencil>(grid, fft, mpi, buffer, timer, method, relay);
     } else {
@@ -213,7 +213,7 @@ int main(int argc, char** argv) {
     if (ng_s.empty()) {
         if (rank == 0) {
             std::cerr << "Usage: " << argv[0]
-                      << " --ng=N [--source=auto,input] [--fft=fftw,ffte1d,ffte2d,heffte-slab,heffte-pencil,heffte-slab-gpu]"
+                      << " --ng=N [--source=auto,input] [--fft=fftw,ffte1d,ffte2d,heffte-slab,heffte-pencil,heffte-slab-gpu,heffte-pencil-gpu]"
                       << " [--method=1,2,3] [--np=N] [--root=DIR]"
                       << " [--pgroup=N] [--relay=0|1]" << std::endl;
         }

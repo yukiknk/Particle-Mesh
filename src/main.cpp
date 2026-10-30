@@ -209,13 +209,16 @@ int main(int argc, char** argv) {
     const int pgroup   = pg_s.empty() ? 0 : std::atoi(pg_s.c_str());
     std::string rl_s   = get_opt(argc, argv, "relay");
     const int relay    = rl_s.empty() ? 1 : std::atoi(rl_s.c_str());
+    std::string lp_s   = get_opt(argc, argv, "loop");
+    std::string st_s   = get_opt(argc, argv, "stat");
+    const std::string stat = st_s.empty() ? "avg" : st_s;
 
     if (ng_s.empty()) {
         if (rank == 0) {
             std::cerr << "Usage: " << argv[0]
                       << " --ng=N [--source=auto,input] [--fft=fftw,ffte1d,ffte2d,heffte-slab,heffte-pencil,heffte-slab-gpu,heffte-pencil-gpu]"
                       << " [--method=1,2,3] [--np=N] [--root=DIR]"
-                      << " [--pgroup=N] [--relay=0|1]" << std::endl;
+                      << " [--pgroup=N] [--relay=0|1] [--loop=N] [--stat=avg|median]" << std::endl;
         }
         MPI_Abort(MPI_COMM_WORLD, 1);
         return 1;
@@ -245,7 +248,7 @@ int main(int argc, char** argv) {
 
     const double Omega0 = 1.0;
     const int warm_up = 2;
-    const int loop = 10;
+    const int loop = lp_s.empty() ? 10 : std::atoi(lp_s.c_str());
     const int all_loop = warm_up + loop;
     double a = 0.9;
 
@@ -266,7 +269,7 @@ int main(int argc, char** argv) {
                 if (!methods.count(m)) continue;
                 int method = std::atoi(m.c_str());
 
-                Timer timer(warm_up, loop, rank);
+                Timer timer(warm_up, loop, rank, stat);
                 BufferManager buffer_manager;
                 setup_buffer_mode(fft_type, buffer_manager, rank);
 
@@ -320,7 +323,7 @@ int main(int argc, char** argv) {
 
     // ---- warm_up: 選択された最初の fft / method で 1 回だけ ----
     {
-        Timer timer(warm_up, loop, rank);
+        Timer timer(warm_up, loop, rank, stat);
 
         // 計測対象と同じ方式で暖機する
         int wtype = 0;

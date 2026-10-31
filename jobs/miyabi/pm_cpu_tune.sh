@@ -5,17 +5,26 @@
 #PBS -W group_list=gu99
 #PBS -j oe
 
-# CPU 版の調整: 4 ノード、Ng=512 で「プロセス数/ノード × FFT ライブラリ」を総当たりし、CPU で最も速い設定を探す
-#   粒子処理は Kokkos CPU（atomic）。従来版も 1/ノード 以外で速くなるか見るため FFTE1D だけ回す
-#   追加の調整: qsub -v PPNS=9:18:36,FFTS=ffte1d pm_cpu_tune.sh（コロン区切り）
+# CPU 版の調整（進捗報告 ① Kokkos 導入と CPU 最適化）
+#   4 ノード、Ng=512、FFT は FFTE-1D（以前の調整で最速）で、
+#   粒子処理の方式（従来版 / Kokkos 複製 / Kokkos atomic）× プロセス数/ノード を総当たりする。
+#   プロセス数を増やすとスレッド数が減り、複製のコスト（格子 × スレッド数）が下がるので、
+#   どこかで複製が atomic より速くなるかを確かめる。
+#   プロセス数/ノード 1, 2, 4, 8 → 72, 36, 18, 9 スレッド（72 コアを全部使う）
+#                    16, 32       → 4, 2 スレッド（72 を割り切れないので 64 コアだけ使う）
+# ぶれ対策: 同じ条件で 3 回投入し、agg_summary.py で中央値をとる
+#   for i in 1 2 3; do qsub jobs/miyabi/pm_cpu_tune.sh; done
+#   python3 jobs/miyabi/agg_summary.py runs/cpu_tune_*_*_*/summary.txt
+# 変更: qsub -v PPNS=1:8,FFT=fftw,NG=512,NP=256 ...（PPNS はコロン区切り）
 . /work/gu99/u99001/Particle-Mesh/jobs/miyabi/pm_common.sh
+NG=${NG:-512}; NP=${NP:-256}; FFT=${FFT:-ffte1d}
 OUT=$PM/runs/cpu_tune_$(date +%Y%m%d_%H%M)_${PBS_JOBID%%.*}
 mkdir -p $OUT
-PPNS=$(echo ${PPNS:-1:2:4:8} | tr ":" " "); FFTS=$(echo ${FFTS:-fftw:ffte1d:ffte2d} | tr ":" " ")
+echo "# Ng=$NG Np=$NP FFT=$FFT nodes=4 EXTRA=$PM_EXTRA" >> $OUT/summary.txt
+PPNS=$(echo ${PPNS:-1:2:4:8:16:32} | tr ":" " ")
 for P in $PPNS; do
-  for F in $FFTS; do
-    run cpu_kk 4 $P ./pm_fft_test_kokkos cpu atomic $F 512 256
-  done
-  run cpu 4 $P ./pm_fft_test_orig cpu scatter ffte1d 512 256
+  run cpu        4 $P ./pm_fft_test_orig   cpu scatter $FFT $NG $NP
+  run cpu_dup    4 $P ./pm_fft_test_kokkos cpu scatter $FFT $NG $NP
+  run cpu_atomic 4 $P ./pm_fft_test_kokkos cpu atomic  $FFT $NG $NP
 done
 echo "summary: $OUT/summary.txt"

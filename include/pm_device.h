@@ -25,4 +25,7 @@ void pm_dev_gather_index(double* send, const double* fftbuf, const size_t* src, 
 void pm_dev_scatter_index(double* dst, const double* src, const size_t* idx, size_t n);
 // Green 関数: 複素数 c[i] (= 実部虚部の2つ並び) に green[i] * factor を掛ける
 void pm_dev_scale_complex(double* c, const double* green, size_t n, double factor);
+// 単精度での送受信（PM_COMM_FLOAT=1）: dst[i] = (float)src[i] / (double)src[i]
+void pm_dev_to_float(float* dst, const double* src, size_t n);
+void pm_dev_to_double(double* dst, const float* src, size_t n);
 #endif

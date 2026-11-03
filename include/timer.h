@@ -18,7 +18,15 @@ public:
         names_.push_back(name);
         times_.push_back(0.0);
         samples_.emplace_back();
+        sub_.push_back(false);
         return static_cast<int>(names_.size() - 1);
+    }
+
+    // 内訳用の区間。ほかの区間の一部なので Total には足さず、Total の後ろに "sub " を付けて出す。
+    int register_sub_timer(const std::string& name) {
+        int id = register_timer("sub " + name);
+        sub_[id] = true;
+        return id;
     }
 
     double get_time() {
@@ -36,8 +44,11 @@ public:
     }
 
     void stop(int id, MPI_Comm comm) {
-        double elapsed = get_time();
-        
+        record(id, get_time(), comm);
+    }
+
+    // 外で測った時間を区間 id に記録する（comm 内の最大値を取る。comm の全ランクで呼ぶ）
+    void record(int id, double elapsed, MPI_Comm comm) {
         if (iteration_ >= warm_up_) {
             double global_max = 0.0;
             MPI_Reduce(&elapsed, &global_max, 1, MPI_DOUBLE, MPI_MAX, 0, comm);
@@ -68,15 +79,22 @@ public:
         const bool med = (stat_ == "median");
         const char* unit = med ? " sec (median)" : " sec (avg)";
         for (size_t i = 0; i < names_.size(); ++i) {
+            if (sub_[i]) continue;
             double val = med ? median(samples_[i]) : times_[i] / loop_;
             total += val;
-            std::cout << std::setw(20) << std::left << names_[i] 
+            std::cout << std::setw(20) << std::left << names_[i]
                       << ": " << std::setw(12) << std::right << val << unit << std::endl;
         }
-        
+
         std::cout << "-------------------------" << std::endl;
         std::cout << std::setw(20) << std::left << "Total"
                   << ": " << std::setw(12) << std::right << total << unit << std::endl;
+        for (size_t i = 0; i < names_.size(); ++i) {
+            if (!sub_[i]) continue;
+            double val = med ? median(samples_[i]) : times_[i] / loop_;
+            std::cout << std::setw(20) << std::left << names_[i]
+                      << ": " << std::setw(12) << std::right << val << unit << std::endl;
+        }
         std::cout << "=========================\n" << std::endl;
     }
 
@@ -99,4 +117,5 @@ private:
     std::string stat_;
     std::vector<std::vector<double>> samples_;   // 反復ごとの値（rank 0 のみ）
     std::vector<int> last_iter_;
+    std::vector<bool> sub_;                      // Total に足さない内訳用の区間
 };

@@ -10,6 +10,7 @@
 #include "buffer_manager.h"
 #include "timer.h"
 #include "utils.h"
+#include "comm_float.h"
 #include "transpose_bwd.h"          // ← 追加(基底クラス)
 
 // TransposeFwdの逆操作:
@@ -69,4 +70,7 @@ private:
     // デバイスモード（BufferManager::is_device()）: TransposeFwdSlab と同じ
     bool device_ = false;
     size_t* d_src_ = nullptr;   // pos0_
+
+    // PM_COMM_FLOAT=1 のとき、全対全を単精度で送る（comm_float.h）
+    FloatAlltoallv fcomm_;
 };

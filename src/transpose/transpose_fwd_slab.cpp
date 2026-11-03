@@ -79,6 +79,8 @@ TransposeFwdSlab::TransposeFwdSlab(const Grid& grid, const FFT& fft, const MPIEn
     buffer.register_buffer(sendbuf_, 0);
     buffer.register_buffer(fftbuf_, 0);
     buffer.register_buffer(recvbuf_, recvbuf_offset);
+    total_size = fcomm_.setup(pm_comm_float_enabled(), buffer, total_size,
+                              sendcounts_, sdispls_, recvcounts_, rdispls_);
     buffer.update_max_size(total_size);
 
     //reorder用のインデックスを構築
@@ -181,6 +183,11 @@ void TransposeFwdSlab::execute() {
 }
 
 void TransposeFwdSlab::alltoallv() {
+    if (fcomm_.on()) {
+        fcomm_.run(sendbuf_, sendcounts_, sdispls_, recvbuf_, recvcounts_, rdispls_,
+                   group_comm_, device_, timer_, t_comm_, t_calc_);
+        return;
+    }
     timer_.start(MPI_COMM_WORLD);
     MPI_Alltoallv(
         sendbuf_, sendcounts_.data(), sdispls_.data(), MPI_DOUBLE,

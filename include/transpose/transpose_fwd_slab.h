@@ -10,6 +10,7 @@
 #include "buffer_manager.h"
 #include "timer.h"
 #include "utils.h"
+#include "comm_float.h"
 #include "transpose_fwd.h"
 
 class TransposeFwdSlab : public TransposeFwd {
@@ -70,4 +71,7 @@ private:
     size_t* d_key_ = nullptr;   // pos0_
     size_t* d_idx_ = nullptr;   // pos1_
     size_t* d_seg_ = nullptr;   // seg_
+
+    // PM_COMM_FLOAT=1 のとき、全対全を単精度で送る（comm_float.h）
+    FloatAlltoallv fcomm_;
 };

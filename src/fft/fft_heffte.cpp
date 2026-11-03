@@ -15,6 +15,7 @@
 #include <omp.h>
 
 #include "heffte.h"
+#include "pm_device.h"
 
 // ---- バックエンドとデバイスメモリの切り替え -------------------------------
 #ifdef PM_HEFFTE_CPU
@@ -74,6 +75,7 @@ struct FFT_HEFFTE::Impl {
 
     std::vector<std::complex<double>> h_cplx;       // ホスト側（Green を掛ける場所）
     std::vector<double> green;                      // ホスト側
+    double* d_green = nullptr;                      // デバイスモード: GPU 側の Green 関数
 };
 
 namespace {
@@ -187,6 +189,10 @@ FFT_HEFFTE::FFT_HEFFTE(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& 
 
     buffer.register_buffer(real_, 0);
     buffer.update_max_size(align_to_64(2 * static_cast<size_t>(local_alloc_)));
+    device_ = buffer.is_device();
+#ifndef PM_USE_KOKKOS
+    if (device_) die("デバイスモードは PM_USE_KOKKOS でビルドしたときだけ使える");
+#endif
 
     if (color_ == 0) {
         // Green 関数（波数空間ボックスの並び: x が最も遅く、z(r2c 軸) が最も速い）
@@ -321,9 +327,15 @@ void FFT_HEFFTE::create_plan() {
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
-    impl_->d_real = static_cast<double*>(dev_alloc(impl_->n_real * sizeof(double)));
     impl_->d_cplx = static_cast<std::complex<double>*>(dev_alloc(impl_->n_cplx * sizeof(std::complex<double>)));
-    impl_->h_cplx.resize(impl_->n_cplx);
+    if (device_) {
+        // 実空間は共有バッファ（GPU 上）をそのまま使う。Green 関数は GPU へ一度だけ送る
+        impl_->d_green = static_cast<double*>(dev_alloc(impl_->n_cplx * sizeof(double)));
+        host_to_dev(impl_->d_green, impl_->green.data(), impl_->n_cplx * sizeof(double));
+    } else {
+        impl_->d_real = static_cast<double*>(dev_alloc(impl_->n_real * sizeof(double)));
+        impl_->h_cplx.resize(impl_->n_cplx);
+    }
 
     int rank = 0, size = 0;
     MPI_Comm_rank(comm_, &rank);
@@ -335,7 +347,8 @@ void FFT_HEFFTE::create_plan() {
                   << "  pencils=" << opt[0] << " reorder=" << opt[1]
                   << " gpu_aware=" << opt[2] << " alg=" << alg_name(opt[3])
                   << "  out=" << (transposed_out_ ? "transposed" : "same")
-                  << " reshapes=" << num_reshapes << std::endl;
+                  << " reshapes=" << num_reshapes
+                  << "  data=" << (device_ ? "device" : "host") << std::endl;
     }
 }
 
@@ -344,12 +357,22 @@ FFT_HEFFTE::~FFT_HEFFTE() {
         impl_->fft.reset();
         dev_free(impl_->d_real);
         dev_free(impl_->d_cplx);
+        dev_free(impl_->d_green);
     }
     if (comm_ != MPI_COMM_NULL) MPI_Comm_free(&comm_);
 }
 
 void FFT_HEFFTE::forward() {
     if (color_ != 0) return;
+
+    if (device_) {
+        timer_.start(comm_);
+        impl_->fft->forward(real_, impl_->d_cplx);
+        dev_sync();
+        timer_.stop(t_fft_, comm_);
+        if (world_rank_ == 0) DEBUG_LOG("FFT");
+        return;
+    }
 
     timer_.start(comm_);
     host_to_dev(impl_->d_real, real_, impl_->n_real * sizeof(double));
@@ -372,6 +395,16 @@ void FFT_HEFFTE::forward() {
 void FFT_HEFFTE::apply_green(double a) {
     if (color_ != 0) return;
 
+#ifdef PM_USE_KOKKOS
+    if (device_) {
+        timer_.start(comm_);
+        pm_dev_scale_complex(reinterpret_cast<double*>(impl_->d_cplx), impl_->d_green, impl_->n_cplx, 1.0 / a);
+        timer_.stop(t_green_, comm_);
+        if (world_rank_ == 0) DEBUG_LOG("Green");
+        return;
+    }
+#endif
+
     timer_.start(comm_);
     const double inv_a = 1.0 / a;
     const size_t n = impl_->n_cplx;
@@ -389,6 +422,21 @@ void FFT_HEFFTE::apply_green(double a) {
 
 void FFT_HEFFTE::backward() {
     if (color_ != 0) return;
+
+    if (device_) {
+        timer_.start(comm_);
+        impl_->fft->backward(impl_->d_cplx, real_);
+        dev_sync();
+        timer_.stop(t_ifft_, comm_);
+        if (pm_checksum_enabled()) {
+            // 照合用にホストへ写してから計算する（計測には含めない）
+            std::vector<double> h(impl_->n_real);
+            dev_to_host(h.data(), real_, impl_->n_real * sizeof(double));
+            pm_print_checksum("HEFFTE", h.data(), static_cast<size_t>(nx_) * ny_, nz_, nz_, comm_);
+        }
+        if (world_rank_ == 0) DEBUG_LOG("IFFT");
+        return;
+    }
 
     timer_.start(comm_);
     host_to_dev(impl_->d_cplx, impl_->h_cplx.data(), impl_->n_cplx * sizeof(std::complex<double>));

@@ -11,6 +11,7 @@
 
 // heFFTe を使う FFT。実空間配列はホストに置き、forward / backward の中で
 // ホスト <-> GPU のコピーをする。Green 関数はホストで掛ける。
+// ただしデバイスモード（共有バッファが GPU 上）では、コピーせず GPU 上のまま計算する。
 //
 // heFFTe に渡す入力の形（Box）を2通り選べる。heFFTe の内部の回し方も同じ形に合わせる。
 //   Slab   : x 方向のスラブ。既存の TransposeFwdSlab / TransposeBwdSlab を使う。内部も slab
@@ -110,5 +111,10 @@ private:
     // Pencil: グループ内全プロセスの分割情報
     std::vector<int> ln0x_, ln0y_, l0sx_, l0sy_;
 
-    double* real_ = nullptr;        // ホスト側の実空間配列（BufferManager の先頭）
+    double* real_ = nullptr;        // 実空間配列（BufferManager の先頭）。通常はホスト側
+
+    // デバイスモード（BufferManager::is_device()、--fft=heffte-slab-gpu）:
+    // real_ は GPU 上にあり、heFFTe にそのまま渡す（ホスト <-> GPU のコピーをしない）。
+    // Green 関数も GPU で掛ける。
+    bool device_ = false;
 };

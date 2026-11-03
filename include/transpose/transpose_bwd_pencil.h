@@ -82,4 +82,9 @@ private:
     double* sendbuf_ = nullptr;
     double* recvbuf_ = nullptr;
     double* gridbuf_ = nullptr;
+
+    // デバイスモード（BufferManager::is_device()）: sendbuf[i] = fftbuf[pos0_[i]]、gridbuf[pos1_[i]] = recvbuf[i] を GPU で
+    bool device_ = false;
+    size_t* d_pos0_ = nullptr;
+    size_t* d_pos1_ = nullptr;
 };

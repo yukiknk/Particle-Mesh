@@ -65,4 +65,8 @@ private:
     double* sendbuf_ = nullptr;
     double* recvbuf_ = nullptr;
     double* fftbuf_  = nullptr;
+
+    // デバイスモード（BufferManager::is_device()）: TransposeFwdSlab と同じ
+    bool device_ = false;
+    size_t* d_src_ = nullptr;   // pos0_
 };

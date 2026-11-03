@@ -126,16 +126,19 @@ void print_config(int Ng, int world_size, int pgroup, int relay) {
 }
 
 // fft_type: 0=FFTW 1=FFTE1D 2=FFTE2D 3=heFFTe(slab) 4=heFFTe(pencil)
-const int kNumFftTypes = 5;
+//           5=heFFTe(slab)、6=heFFTe(pencil) をデバイスモードで（共有バッファを GPU 上に置き、
+//             Transpose と粒子処理も GPU で回す。PM_USE_KOKKOS でビルドしたときだけ使える）
+const int kNumFftTypes = 7;
+bool is_device_fft(int t) { return t == 5 || t == 6; }
 
 const char* fft_label(int t) {
-    static const char* const names[] = {"FFTW", "FFTE1D", "FFTE2D", "HEFFTE_SLAB", "HEFFTE_PENCIL"};
+    static const char* const names[] = {"FFTW", "FFTE1D", "FFTE2D", "HEFFTE_SLAB", "HEFFTE_PENCIL", "HEFFTE_SLAB_GPU", "HEFFTE_PENCIL_GPU"};
     return names[t];
 }
 
 // --fft= に書かれた名前で選ばれているか。"heffte" は "heffte-slab" の別名。
 bool fft_requested(const std::set<std::string>& ffts, int t) {
-    static const char* const keys[] = {"fftw", "ffte1d", "ffte2d", "heffte-slab", "heffte-pencil"};
+    static const char* const keys[] = {"fftw", "ffte1d", "ffte2d", "heffte-slab", "heffte-pencil", "heffte-slab-gpu", "heffte-pencil-gpu"};
     if (t == 3 && ffts.count("heffte")) return true;
     return ffts.count(keys[t]) > 0;
 }
@@ -145,7 +148,7 @@ std::unique_ptr<FFT> make_heffte(int Ng, double Omega0, const MPIEnv& mpi,
                                  BufferManager& buffer, Timer& timer, int method,
                                  int fft_type, int pgroup) {
 #ifdef USE_HEFFTE
-    const FFT_HEFFTE::Box box = (fft_type == 4) ? FFT_HEFFTE::Box::Pencil : FFT_HEFFTE::Box::Slab;
+    const FFT_HEFFTE::Box box = (fft_type == 4 || fft_type == 6) ? FFT_HEFFTE::Box::Pencil : FFT_HEFFTE::Box::Slab;
     return std::make_unique<FFT_HEFFTE>(Ng, Omega0, mpi, buffer, timer, method, box, pgroup);
 #else
     (void)Ng; (void)Omega0; (void)buffer; (void)timer; (void)method;
@@ -158,13 +161,26 @@ std::unique_ptr<FFT> make_heffte(int Ng, double Omega0, const MPIEnv& mpi,
 #endif
 }
 
+// デバイスモード（fft_type 5, 6）のときは共有バッファを GPU 上に置く。部品を作る前に呼ぶ。
+void setup_buffer_mode(int fft_type, BufferManager& buffer, int rank) {
+    if (!is_device_fft(fft_type)) return;
+#ifdef PM_USE_KOKKOS
+    buffer.set_device(true);
+    (void)rank;
+#else
+    (void)buffer;
+    if (rank == 0) std::cerr << "--fft=heffte-*-gpu: このバイナリは Kokkos なしでビルドされています（KOKKOS=1 でビルドする）" << std::endl;
+    MPI_Abort(MPI_COMM_WORLD, 1);
+#endif
+}
+
 // FFT の入力の形に合った Transpose を作る。
 //   slab  : FFTW, FFTE1D, heFFTe(slab)      relay 非対応（従来動作のまま）
 //   pencil: FFTE2D, heFFTe(pencil)
 void make_transposes(int fft_type, const Grid& grid, const FFT& fft, const MPIEnv& mpi,
                      BufferManager& buffer, Timer& timer, int method, int relay,
                      std::unique_ptr<TransposeFwd>& fwd, std::unique_ptr<TransposeBwd>& bwd) {
-    if (fft_type == 2 || fft_type == 4) {
+    if (fft_type == 2 || fft_type == 4 || fft_type == 6) {
         fwd = std::make_unique<TransposeFwdPencil>(grid, fft, mpi, buffer, timer, method, relay);
         bwd = std::make_unique<TransposeBwdPencil>(grid, fft, mpi, buffer, timer, method, relay);
     } else {
@@ -177,6 +193,9 @@ void make_transposes(int fft_type, const Grid& grid, const FFT& fft, const MPIEn
 
 int main(int argc, char** argv) {
     MPIEnv mpi_env(argc, argv);
+#ifdef PM_USE_KOKKOS
+    PmKokkosScope kokkos_scope(argc, argv);   // MPIEnv より後に作り、先に破棄する
+#endif
     const int rank = mpi_env.world_rank();
 
     // ---- 引数パース ----
@@ -190,13 +209,16 @@ int main(int argc, char** argv) {
     const int pgroup   = pg_s.empty() ? 0 : std::atoi(pg_s.c_str());
     std::string rl_s   = get_opt(argc, argv, "relay");
     const int relay    = rl_s.empty() ? 1 : std::atoi(rl_s.c_str());
+    std::string lp_s   = get_opt(argc, argv, "loop");
+    std::string st_s   = get_opt(argc, argv, "stat");
+    const std::string stat = st_s.empty() ? "avg" : st_s;
 
     if (ng_s.empty()) {
         if (rank == 0) {
             std::cerr << "Usage: " << argv[0]
-                      << " --ng=N [--source=auto,input] [--fft=fftw,ffte1d,ffte2d,heffte-slab,heffte-pencil]"
+                      << " --ng=N [--source=auto,input] [--fft=fftw,ffte1d,ffte2d,heffte-slab,heffte-pencil,heffte-slab-gpu,heffte-pencil-gpu]"
                       << " [--method=1,2,3] [--np=N] [--root=DIR]"
-                      << " [--pgroup=N] [--relay=0|1]" << std::endl;
+                      << " [--pgroup=N] [--relay=0|1] [--loop=N] [--stat=avg|median]" << std::endl;
         }
         MPI_Abort(MPI_COMM_WORLD, 1);
         return 1;
@@ -226,7 +248,7 @@ int main(int argc, char** argv) {
 
     const double Omega0 = 1.0;
     const int warm_up = 2;
-    const int loop = 10;
+    const int loop = lp_s.empty() ? 10 : std::atoi(lp_s.c_str());
     const int all_loop = warm_up + loop;
     double a = 0.9;
 
@@ -247,8 +269,9 @@ int main(int argc, char** argv) {
                 if (!methods.count(m)) continue;
                 int method = std::atoi(m.c_str());
 
-                Timer timer(warm_up, loop, rank);
+                Timer timer(warm_up, loop, rank, stat);
                 BufferManager buffer_manager;
+                setup_buffer_mode(fft_type, buffer_manager, rank);
 
                 std::unique_ptr<FFT> fft;
                 if (fft_type == 0)
@@ -300,7 +323,7 @@ int main(int argc, char** argv) {
 
     // ---- warm_up: 選択された最初の fft / method で 1 回だけ ----
     {
-        Timer timer(warm_up, loop, rank);
+        Timer timer(warm_up, loop, rank, stat);
 
         // 計測対象と同じ方式で暖機する
         int wtype = 0;
@@ -310,6 +333,7 @@ int main(int argc, char** argv) {
         int method = methods.count("1") ? 1 : (methods.count("2") ? 2 : 3);
 
         BufferManager buffer_manager;
+        setup_buffer_mode(wtype, buffer_manager, rank);
         GridAuto grid(Ng, mpi_env);
 
         std::unique_ptr<FFT> fft;

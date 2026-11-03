@@ -63,4 +63,11 @@ private:
     double* sendbuf_ = nullptr;
     double* recvbuf_ = nullptr;
     double* fftbuf_ = nullptr;
+
+    // デバイスモード（BufferManager::is_device()）: 共有バッファは GPU 上。
+    // 通信は GPU-aware MPI にそのまま渡し、reorder は GPU で行う。添字表もデバイスに置く。
+    bool device_ = false;
+    size_t* d_key_ = nullptr;   // pos0_
+    size_t* d_idx_ = nullptr;   // pos1_
+    size_t* d_seg_ = nullptr;   // seg_
 };

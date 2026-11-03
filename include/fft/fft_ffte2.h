@@ -55,6 +55,8 @@ private:
     int t_fft_;
     int t_ifft_;
     int t_green_;
+    int t_fft_comm_ = -1;     // PM_FINE_TIMER=1 のときだけ: FFT / IFFT の中の通信
+    int t_ifft_comm_ = -1;
 
     int Ng_;
     int cap_;

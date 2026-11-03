@@ -11,9 +11,8 @@ export OMP_NUM_THREADS=$1 OMP_PROC_BIND=close OMP_PLACES=cores OMP_STACKSIZE=64M
 export PM_INTERP=$2 PM_DEPOSIT=$3 PM_CHECKSUM=$4 PM_WISDOM_DIR=/work/gu99/u99001/Particle-Mesh
 EOS
 # 細かい計測（既定は無効）。ジョブスクリプトで export しておくと計算ノード側へ渡す
-#   PM_FINE_TIMER=1        : FFTE の FFT / IFFT の中の通信時間を "sub FFT Comm" / "sub IFFT Comm" として出す
-#   PM_HEFFTE_TRACE=<頭>   : heFFTe の内部の区間をランクごとのファイルに書く（heFFTe を tracing 付きでビルドしたときだけ）
-echo "export PM_FINE_TIMER=${PM_FINE_TIMER:-0} PM_HEFFTE_TRACE=${PM_HEFFTE_TRACE:-}" >> ./pm_wrap.sh
+#   PM_FINE_TIMER=1 : FFTE の FFT / IFFT の中の通信時間を "sub FFT Comm" / "sub IFFT Comm" として出す
+echo "export PM_FINE_TIMER=${PM_FINE_TIMER:-0}" >> ./pm_wrap.sh
 cat >> ./pm_wrap.sh <<'EOS'
 shift 4
 ulimit -s unlimited

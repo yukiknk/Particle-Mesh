@@ -132,6 +132,8 @@ TransposeBwdPencil::TransposeBwdPencil(const Grid& grid, const FFT& fft, const M
     buffer.register_buffer(gridbuf_, 0);
     buffer.register_buffer(sendbuf_, sendbuf_offset);
     buffer.register_buffer(recvbuf_, recvbuf_offset);
+    total_size = fcomm_.setup(pm_comm_float_enabled(), buffer, total_size,
+                              sendcounts_, sdispls_, recvcounts_, rdispls_);
     buffer.update_max_size(total_size);
 
     // ---- 受信側 reorder インデックス構築 ----
@@ -303,6 +305,11 @@ void TransposeBwdPencil::reorder_from_fft() {
 }
 
 void TransposeBwdPencil::alltoallv() {
+    if (fcomm_.on()) {
+        fcomm_.run(sendbuf_, sendcounts_, sdispls_, recvbuf_, recvcounts_, rdispls_,
+                   a2a_comm_, device_, timer_, t_comm_, t_calc_);
+        return;
+    }
     // 送受信の向きが Fwd と逆(sendcounts/sdispls で送り、recvcounts/rdispls で受ける)
     timer_.start(MPI_COMM_WORLD);
     MPI_Alltoallv(

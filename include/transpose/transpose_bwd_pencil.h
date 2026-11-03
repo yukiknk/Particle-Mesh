@@ -10,6 +10,7 @@
 #include "buffer_manager.h"
 #include "timer.h"
 #include "utils.h"
+#include "comm_float.h"
 #include "transpose_bwd.h"
 
 class TransposeBwdPencil : public TransposeBwd {
@@ -87,4 +88,7 @@ private:
     bool device_ = false;
     size_t* d_pos0_ = nullptr;
     size_t* d_pos1_ = nullptr;
+
+    // PM_COMM_FLOAT=1 のとき、全対全を単精度で送る（comm_float.h）
+    FloatAlltoallv fcomm_;
 };

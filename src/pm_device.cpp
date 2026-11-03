@@ -89,4 +89,15 @@ void pm_dev_scale_complex(double* c, const double* green, size_t n, double facto
         });
     Exec().fence();
 }
+void pm_dev_to_float(float* dst, const double* src, size_t n) {
+    Kokkos::parallel_for("PM::to_float", Policy(0, static_cast<int64_t>(n)),
+        KOKKOS_LAMBDA(const int64_t i) { dst[i] = static_cast<float>(src[i]); });
+    Exec().fence();
+}
+
+void pm_dev_to_double(double* dst, const float* src, size_t n) {
+    Kokkos::parallel_for("PM::to_double", Policy(0, static_cast<int64_t>(n)),
+        KOKKOS_LAMBDA(const int64_t i) { dst[i] = static_cast<double>(src[i]); });
+    Exec().fence();
+}
 #endif  // PM_USE_KOKKOS

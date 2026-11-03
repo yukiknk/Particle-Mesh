@@ -6,6 +6,7 @@
 #include <omp.h>
 #include "grouping.h"
 #include "fft/fft_checksum.h"
+#include "fft/ffte_comm_timer.h"
 
 FFT_FFTE1::FFT_FFTE1(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method) 
     : timer_(timer), world_rank_(mpi.world_rank()), Ng_(Ng), stride_(Ng) {
@@ -13,6 +14,10 @@ FFT_FFTE1::FFT_FFTE1(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& bu
     t_fft_ = timer_.register_timer("FFT");
     t_ifft_ = timer_.register_timer("IFFT");
     t_green_ = timer_.register_timer("Green");
+    if (pm_fine_timer_enabled()) {
+        t_fft_comm_  = timer_.register_sub_timer("FFT Comm");
+        t_ifft_comm_ = timer_.register_sub_timer("IFFT Comm");
+    }
 
     // FFTE は NPU <= Ng/2 の制約があるため、Ng/2 を渡す
     Grouping grouping(Ng_ / 2, mpi, method);
@@ -95,10 +100,12 @@ FFT_FFTE1::~FFT_FFTE1() {
 
 void FFT_FFTE1::forward() {
     if (color_ == 0) {
+        pmftim_.tcomm = 0.0;
         timer_.start(comm_);
         int IOPT = -2;
         pdzfft3d_(real_, calc_, &Ng_, &Ng_, &Ng_, &fortran_Comm_, &rank_, &size_, &IOPT);
         timer_.stop(t_fft_, comm_);
+        if (t_fft_comm_ >= 0) timer_.record(t_fft_comm_, pmftim_.tcomm, comm_);
         if (world_rank_ == 0) {
             DEBUG_LOG("FFTE FFT");
         }
@@ -107,10 +114,12 @@ void FFT_FFTE1::forward() {
 
 void FFT_FFTE1::backward() {
     if (color_ == 0) {
+        pmftim_.tcomm = 0.0;
         timer_.start(comm_);
         int IOPT = 2;
         pzdfft3d_(real_, calc_, &Ng_, &Ng_, &Ng_, &fortran_Comm_, &rank_, &size_, &IOPT);
         timer_.stop(t_ifft_, comm_);
+        if (t_ifft_comm_ >= 0) timer_.record(t_ifft_comm_, pmftim_.tcomm, comm_);
         if (pm_checksum_enabled()) pm_print_checksum("FFTE1D", real_, static_cast<size_t>(local_n0_) * Ng_, Ng_, stride_, comm_);
         if (world_rank_ == 0) {
             DEBUG_LOG("FFTE IFFT");

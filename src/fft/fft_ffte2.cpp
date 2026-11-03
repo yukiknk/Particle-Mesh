@@ -6,6 +6,7 @@
 #include "debug.h"
 #include "grouping.h"
 #include "fft/fft_checksum.h"
+#include "fft/ffte_comm_timer.h"
 
 FFT_FFTE2::FFT_FFTE2(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& buffer, Timer& timer, int method, int cap_override)
     : timer_(timer),
@@ -17,6 +18,10 @@ FFT_FFTE2::FFT_FFTE2(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& bu
     t_fft_   = timer_.register_timer("FFT");
     t_ifft_  = timer_.register_timer("IFFT");
     t_green_ = timer_.register_timer("Green");
+    if (pm_fine_timer_enabled()) {
+        t_fft_comm_  = timer_.register_sub_timer("FFT Comm");
+        t_ifft_comm_ = timer_.register_sub_timer("IFFT Comm");
+    }
 
     // ---- グループ分け(超過時のみ複数グループ)----
     // 1グループの最大サイズは Ng^2/4(NPUX<=Ng/2, NPUY<=Ng/2 の積)
@@ -141,12 +146,14 @@ void FFT_FFTE2::create_plan() {
 
 void FFT_FFTE2::forward() {
     if (color_ == 0) {
+        pmftim_.tcomm = 0.0;
         timer_.start(comm_);
         int IOPT = -2;
         pdzfft3dv_(real_, calc_, &Ng_, &Ng_, &Ng_,
                    &fortran_Comm_y_, &fortran_Comm_x_, &colory_,
                    &NPUY_, &NPUX_, &IOPT);
         timer_.stop(t_fft_, comm_);
+        if (t_fft_comm_ >= 0) timer_.record(t_fft_comm_, pmftim_.tcomm, comm_);
         if (world_rank_ == 0) {
             DEBUG_LOG("FFTE2 FFT");
         }
@@ -155,12 +162,14 @@ void FFT_FFTE2::forward() {
 
 void FFT_FFTE2::backward() {
     if (color_ == 0) {
+        pmftim_.tcomm = 0.0;
         timer_.start(comm_);
         int IOPT = 2;
         pzdfft3dv_(real_, calc_, &Ng_, &Ng_, &Ng_,
                    &fortran_Comm_y_, &fortran_Comm_x_, &colory_,
                    &NPUY_, &NPUX_, &IOPT);
         timer_.stop(t_ifft_, comm_);
+        if (t_ifft_comm_ >= 0) timer_.record(t_ifft_comm_, pmftim_.tcomm, comm_);
         if (pm_checksum_enabled()) pm_print_checksum("FFTE2D", real_, static_cast<size_t>(local_n0_x_) * local_n0_y_, Ng_, stride_, comm_);
         if (world_rank_ == 0) {
             DEBUG_LOG("FFTE2 IFFT");

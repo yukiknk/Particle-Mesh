@@ -9,6 +9,12 @@ cat > ./pm_wrap.sh <<'EOS'
 #!/bin/bash
 export OMP_NUM_THREADS=$1 OMP_PROC_BIND=close OMP_PLACES=cores OMP_STACKSIZE=64M
 export PM_INTERP=$2 PM_DEPOSIT=$3 PM_CHECKSUM=$4 PM_WISDOM_DIR=/work/gu99/u99001/Particle-Mesh
+EOS
+# 細かい計測（既定は無効）。ジョブスクリプトで export しておくと計算ノード側へ渡す
+#   PM_FINE_TIMER=1        : FFTE の FFT / IFFT の中の通信時間を "sub FFT Comm" / "sub IFFT Comm" として出す
+#   PM_HEFFTE_TRACE=<頭>   : heFFTe の内部の区間をランクごとのファイルに書く（heFFTe を tracing 付きでビルドしたときだけ）
+echo "export PM_FINE_TIMER=${PM_FINE_TIMER:-0} PM_HEFFTE_TRACE=${PM_HEFFTE_TRACE:-}" >> ./pm_wrap.sh
+cat >> ./pm_wrap.sh <<'EOS'
 shift 4
 ulimit -s unlimited
 exec "$@"
@@ -28,5 +34,6 @@ run () {
   mpiexec -n $((N * P)) --map-by ppr:${P}:node:PE=${T} --bind-to core \
     ./pm_wrap.sh $T $INTERP $DEP 0 $BIN --ng=$NG --np=$NP --source=auto --fft=$FFT --method=2 $PM_EXTRA > $LOG 2>&1
   echo "## $TAG Ng=$NG nodes=$N ppn=$P fft=$FFT exit=$?" >> $OUT/summary.txt
-  sed -n '/===== Timer Results =====/,/^Total/p' $LOG | grep -v "=====" >> $OUT/summary.txt
+  # Total の後ろの "sub ..."（PM_FINE_TIMER=1 の内訳）も拾うため、閉じの ===== まで取る
+  sed -n '/===== Timer Results =====/,/^=====/p' $LOG | grep -v "=====" >> $OUT/summary.txt
 }

@@ -76,6 +76,7 @@ struct FFT_HEFFTE::Impl {
     std::vector<std::complex<double>> h_cplx;       // ホスト側（Green を掛ける場所）
     std::vector<double> green;                      // ホスト側
     double* d_green = nullptr;                      // デバイスモード: GPU 側の Green 関数
+    bool tracing = false;                           // heFFTe の内部の区間記録（PM_HEFFTE_TRACE）
 };
 
 namespace {
@@ -101,6 +102,12 @@ int env_alg(int fallback) {
 const char* alg_name(int a) {
     return a == 1 ? "alltoall" : (a == 2 ? "p2p" : (a == 3 ? "p2p_plined" : "alltoallv"));
 }
+
+// PM_HEFFTE_TRACE=<名前の頭>: heFFTe の内部の区間（packing / unpacking / 通信 / FFT など）を
+// ランクごとのファイル <名前の頭>_<box>_<通し番号>_<rank>.log に書き出す（heffte::add_trace の記録）。
+// heFFTe 本体を -DHeffte_ENABLE_TRACING=ON でビルドしたときだけ記録される（それ以外は何もしない）。
+// 集計は jobs/miyabi/heffte_trace_summary.py。
+int g_trace_serial = 0;
 
 const char* box_name(FFT_HEFFTE::Box b) {
     return b == FFT_HEFFTE::Box::Slab ? "slab" : "pencil";
@@ -304,6 +311,14 @@ void FFT_HEFFTE::create_plan() {
 
     impl_->fft = std::make_unique<heffte::fft3d_r2c<backend_tag>>(inbox, outbox, r2c_direction, comm_, options);
 
+    {
+        const char* e = std::getenv("PM_HEFFTE_TRACE");
+        if (e != nullptr && e[0] != '\0') {
+            heffte::init_tracing(std::string(e) + "_" + box_name(box_) + "_" + std::to_string(g_trace_serial++));
+            impl_->tracing = true;
+        }
+    }
+
     // heFFTe が立てる計画を同じ入力で作り直し、形が変わる段（組み替え）の数を数える。表示用。
     int num_reshapes = 0;
     {
@@ -354,6 +369,7 @@ void FFT_HEFFTE::create_plan() {
 
 FFT_HEFFTE::~FFT_HEFFTE() {
     if (impl_) {
+        if (impl_->tracing) heffte::finalize_tracing();
         impl_->fft.reset();
         dev_free(impl_->d_real);
         dev_free(impl_->d_cplx);

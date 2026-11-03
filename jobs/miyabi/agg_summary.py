@@ -50,13 +50,18 @@ def main(files):
         print(f"## {tag} Ng={ng} nodes={nodes} ppn={ppn} fft={fft} exit={0 if ok else 1} n={len(ok)}")
         if not ok:
             continue
-        names = [n for n in ok[0] if n != "Total"]
+        # "sub " で始まる区間（PM_FINE_TIMER=1 の内訳）はほかの区間の一部なので Total に足さない
+        names = [n for n in ok[0] if n != "Total" and not n.startswith("sub ")]
+        subs = [n for n in ok[0] if n.startswith("sub ")]
         for n in names:
             v = statistics.median([t.get(n, 0.0) for t in ok])
             print(f"{n:<20}: {v:12.6f} sec (median)")
         tot = sum(statistics.median([t.get(n, 0.0) for t in ok]) for n in names)
         print("-------------------------")
         print(f"{'Total':<20}: {tot:12.6f} sec (median)")
+        for n in subs:
+            v = statistics.median([t.get(n, 0.0) for t in ok])
+            print(f"{n:<20}: {v:12.6f} sec (median)")
         ts = [t["Total"] for t in ok if "Total" in t]
         if ts:
             spread.append((k, min(ts), statistics.median(ts), max(ts)))

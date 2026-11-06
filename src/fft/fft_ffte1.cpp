@@ -14,6 +14,7 @@ FFT_FFTE1::FFT_FFTE1(int Ng, double Omega0, const MPIEnv& mpi, BufferManager& bu
     t_fft_ = timer_.register_timer("FFT");
     t_ifft_ = timer_.register_timer("IFFT");
     t_green_ = timer_.register_timer("Green");
+    pmcflt_.flag = pm_fft_comm_float_enabled() ? 1 : 0;
     if (pm_fine_timer_enabled()) {
         t_fft_comm_  = timer_.register_sub_timer("FFT Comm");
         t_ifft_comm_ = timer_.register_sub_timer("IFFT Comm");

@@ -30,7 +30,8 @@ FSRCS = src/fft/factor.f \
         src/fft/pdzfft3d.f \
         src/fft/pzdfft3d.f \
         src/fft/pdzfft3dv.f \
-        src/fft/pzdfft3dv.f
+        src/fft/pzdfft3dv.f \
+        src/fft/pmcomm.f
 
 # オブジェクトファイル（src/以下の構造を維持）
 CPP_OBJS = $(SRCS:.cpp=.o)

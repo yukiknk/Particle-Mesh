@@ -11,7 +11,11 @@
 #   CPU: FFTE-1D（Ng=1024 で最良だった proc/node: 8 ノード 16、16 ノード 2）× {既定, 単精度}
 #   すべて PM_FINE_TIMER=1（FFTE の FFT の中の通信時間を sub 行で出す。PR #16）
 #   PM_CHECKSUM=1 で倍精度版とのチェックサムの差も見る（計時の区間の外で計算する）
-# ノード数ごとに 3 回投入する:
+# Ng=512（2・4・8・16 ノード、Np=256）で測るときは NG=512,NP=256 を渡す（proc/node は上の表が自動で入る）:
+#   for N in 2 4 8 16; do for i in 1 2 3; do
+#     qsub -l select=$N:mpiprocs=72:ompthreads=1 -v N=$N,NG=512,NP=256 jobs/miyabi/pm_comm_opt.sh;
+#     done; done
+# Ng=1024 は ノード数ごとに 3 回投入する:
 #   for N in 8 16; do for i in 1 2 3; do
 #     qsub -l select=$N:mpiprocs=72:ompthreads=1 -v N=$N jobs/miyabi/pm_comm_opt.sh; done; done
 #   集計: python3 jobs/miyabi/agg_summary.py runs/commopt_ng1024_n8_*/summary.txt
@@ -19,7 +23,10 @@
 . /work/gu99/u99001/Particle-Mesh/jobs/miyabi/pm_common.sh
 N=${N:?N=ノード数 を指定}; NG=${NG:-1024}; NP=${NP:-512}; CHECKSUM=${CHECKSUM:-1}
 if [ -z "$CPU_PPN" ]; then
-  if [ "$N" -ge 16 ]; then CPU_PPN=2; else CPU_PPN=16; fi
+  if [ "$NG" -le 512 ]; then
+    # Ng=512 で FFTE-1D が最良だった proc/node（miyabi-測定結果-20261031: 2 ノード 16、4 ノード 8、8 ノード 8、16 ノード 4）
+    case $N in 2) CPU_PPN=16;; 4|8) CPU_PPN=8;; *) CPU_PPN=4;; esac
+  elif [ "$N" -ge 16 ]; then CPU_PPN=2; else CPU_PPN=16; fi
 fi
 OUT=$PM/runs/commopt_ng${NG}_n${N}_$(date +%Y%m%d_%H%M)_${PBS_JOBID%%.*}
 mkdir -p $OUT

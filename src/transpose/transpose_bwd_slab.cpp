@@ -227,7 +227,8 @@ void TransposeBwdSlab::reorder() {
     timer_.start(MPI_COMM_WORLD);
 #ifdef PM_USE_KOKKOS
     if (device_) {
-        pm_dev_gather_index(sendbuf_, fftbuf_, d_src_, send_total_);
+        if (fcomm_.on()) pm_dev_gather_index_f(fcomm_.fsend(), fftbuf_, d_src_, send_total_);
+        else pm_dev_gather_index(sendbuf_, fftbuf_, d_src_, send_total_);
         timer_.stop(t_calc_, MPI_COMM_WORLD);
         return;
     }
@@ -235,6 +236,14 @@ void TransposeBwdSlab::reorder() {
 
     const size_t N = send_total_;
     const size_t* __restrict src_idx = pos0_.data();
+
+    if (fcomm_.on()) {
+        float* __restrict fsend = fcomm_.fsend();
+        #pragma omp parallel for schedule(static)
+        for (size_t i = 0; i < N; ++i) fsend[i] = static_cast<float>(fftbuf_[src_idx[i]]);
+        timer_.stop(t_calc_, MPI_COMM_WORLD);
+        return;
+    }
 
     #pragma omp parallel for schedule(static)
     for (size_t i = 0; i < N; ++i) {
@@ -247,7 +256,8 @@ void TransposeBwdSlab::reorder() {
 void TransposeBwdSlab::alltoallv() {
     if (fcomm_.on()) {
         fcomm_.run(sendbuf_, sendcounts_, sdispls_, recvbuf_, recvcounts_, rdispls_,
-                   group_comm_, device_, timer_, t_comm_, t_calc_);
+                   group_comm_, device_, timer_, t_comm_, t_calc_,
+                   /*pack_fused=*/true, /*unpack_fused=*/false);   // 送信の double→float は reorder() が書きながら行う
         return;
     }
     timer_.start(MPI_COMM_WORLD);

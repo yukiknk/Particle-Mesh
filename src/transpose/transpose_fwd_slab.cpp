@@ -185,7 +185,8 @@ void TransposeFwdSlab::execute() {
 void TransposeFwdSlab::alltoallv() {
     if (fcomm_.on()) {
         fcomm_.run(sendbuf_, sendcounts_, sdispls_, recvbuf_, recvcounts_, rdispls_,
-                   group_comm_, device_, timer_, t_comm_, t_calc_);
+                   group_comm_, device_, timer_, t_comm_, t_calc_,
+                   /*pack_fused=*/false, /*unpack_fused=*/true);   // 受信の float→double は reorder() が読みながら行う
         return;
     }
     timer_.start(MPI_COMM_WORLD);
@@ -202,7 +203,8 @@ void TransposeFwdSlab::reorder() {
 #ifdef PM_USE_KOKKOS
     if (device_) {
         pm_dev_zero(fftbuf_, fft_buf_size_);
-        pm_dev_fwd_reorder(fftbuf_, recvbuf_, d_seg_, d_idx_, d_key_, seg_.size() - 1);
+        if (fcomm_.on()) pm_dev_fwd_reorder_f(fftbuf_, fcomm_.frecv(), d_seg_, d_idx_, d_key_, seg_.size() - 1);
+        else pm_dev_fwd_reorder(fftbuf_, recvbuf_, d_seg_, d_idx_, d_key_, seg_.size() - 1);
         timer_.stop(t_calc_, MPI_COMM_WORLD);
         return;
     }
@@ -212,6 +214,18 @@ void TransposeFwdSlab::reorder() {
     const size_t* __restrict idx = pos1_.data();
     const size_t* __restrict key = pos0_.data();
     std::memset(fftbuf_, 0, fft_buf_size_ * sizeof(double));
+
+    if (fcomm_.on()) {
+        const float* __restrict frecv = fcomm_.frecv();
+        #pragma omp parallel for schedule(guided)
+        for (size_t s = 0; s < S; ++s) {
+            double acc = 0.0;
+            for (size_t k = seg[s]; k < seg[s + 1]; ++k) acc += static_cast<double>(frecv[idx[k]]);
+            fftbuf_[key[seg[s]]] = acc;
+        }
+        timer_.stop(t_calc_, MPI_COMM_WORLD);
+        return;
+    }
     
     #pragma omp parallel for schedule(guided)
     for (size_t s = 0; s < S; ++s) {

@@ -263,13 +263,35 @@ void TransposeFwdPencil::reorder_for_alltoallv() {
     timer_.start(MPI_COMM_WORLD);
 #ifdef PM_USE_KOKKOS
     if (device_) {
-        pm_dev_gather_index(sendbuf_, rhobuf_, d_send_, send_total_);
+        if (fcomm_.on()) pm_dev_gather_index_f(fcomm_.fsend(), rhobuf_, d_send_, send_total_);
+        else pm_dev_gather_index(sendbuf_, rhobuf_, d_send_, send_total_);
         timer_.stop(t_calc_, MPI_COMM_WORLD);
         return;
     }
 #endif
 
     const size_t N = send_nx_.size();
+
+    if (fcomm_.on()) {
+        float* const fsend = fcomm_.fsend();
+        #pragma omp parallel
+        {
+            for (size_t i = 0; i < N; ++i) {
+                float* __restrict dst_base = fsend + send_dst_[i];
+                const double* __restrict src_base = rhobuf_ + send_src_[i];
+                const int row_size = send_ny_[i];
+
+                #pragma omp for nowait
+                for (int j = 0; j < send_nx_[i]; ++j) {
+                    float* __restrict d = dst_base + static_cast<size_t>(j) * row_size;
+                    const double* __restrict sp = src_base + static_cast<size_t>(j) * slice_;
+                    for (int c = 0; c < row_size; ++c) d[c] = static_cast<float>(sp[c]);
+                }
+            }
+        }
+        timer_.stop(t_calc_, MPI_COMM_WORLD);
+        return;
+    }
 
     #pragma omp parallel
     {
@@ -295,7 +317,8 @@ void TransposeFwdPencil::reorder_for_alltoallv() {
 void TransposeFwdPencil::alltoallv() {
     if (fcomm_.on()) {
         fcomm_.run(sendbuf_, sendcounts_, sdispls_, recvbuf_, recvcounts_, rdispls_,
-                   a2a_comm_, device_, timer_, t_comm_, t_calc_);
+                   a2a_comm_, device_, timer_, t_comm_, t_calc_,
+                   /*pack_fused=*/true, /*unpack_fused=*/true);   // 変換は reorder_for_alltoallv / reorder_for_fft が行う
         return;
     }
     timer_.start(MPI_COMM_WORLD);
@@ -312,7 +335,8 @@ void TransposeFwdPencil::reorder_for_fft() {
 #ifdef PM_USE_KOKKOS
     if (device_) {
         pm_dev_zero(fftbuf_, fft_buf_size_);
-        pm_dev_fwd_reorder(fftbuf_, recvbuf_, d_seg_, d_idx_, d_key_, seg_.size() - 1);
+        if (fcomm_.on()) pm_dev_fwd_reorder_f(fftbuf_, fcomm_.frecv(), d_seg_, d_idx_, d_key_, seg_.size() - 1);
+        else pm_dev_fwd_reorder(fftbuf_, recvbuf_, d_seg_, d_idx_, d_key_, seg_.size() - 1);
         timer_.stop(t_calc_, MPI_COMM_WORLD);
         return;
     }
@@ -326,6 +350,18 @@ void TransposeFwdPencil::reorder_for_fft() {
     // fftbuf_ は pos0_ に登録された位置にしか書き込まれないので、
     // padding 領域のゴミを除去するために必要
     std::memset(fftbuf_, 0, fft_buf_size_ * sizeof(double));
+
+    if (fcomm_.on()) {
+        const float* __restrict frecv = fcomm_.frecv();
+        #pragma omp parallel for schedule(guided)
+        for (size_t s = 0; s < S; ++s) {
+            double acc = 0.0;
+            for (size_t k = seg[s]; k < seg[s + 1]; ++k) acc += static_cast<double>(frecv[idx[k]]);
+            fftbuf_[key[seg[s]]] = acc;
+        }
+        timer_.stop(t_calc_, MPI_COMM_WORLD);
+        return;
+    }
 
     #pragma omp parallel for schedule(guided)
     for (size_t s = 0; s < S; ++s) {

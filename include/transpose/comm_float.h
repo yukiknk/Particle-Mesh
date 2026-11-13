@@ -24,6 +24,9 @@ inline bool pm_comm_float_enabled() {
 // 全対全を単精度で送るための部品。Transpose の各クラスが 1 つずつ持つ。
 //   setup(): コンストラクタで、送受信の counts / displs が決まった後、update_max_size の前に呼ぶ
 //   run()  : alltoallv() の代わりに呼ぶ（変換の時間は t_calc、通信は t_comm に入る）
+//   fsend() / frecv(): 単精度の送受信バッファ。詰め（reorder）が直接 fsend() に float で書く、
+//     並べ替えが直接 frecv() から float で読む場合は、run() の pack_fused / unpack_fused を true にして
+//     変換だけの別パスを省く（メモリ律速なので、1 パス分の読み書きが減る）
 class FloatAlltoallv {
 public:
     // 単精度用の送受信バッファを共有バッファの base（double 個）以降に登録し、新しい使用量を返す。
@@ -45,25 +48,32 @@ public:
     }
 
     bool on() const { return on_; }
+    float* fsend() const { return reinterpret_cast<float*>(fsend_); }
+    float* frecv() const { return reinterpret_cast<float*>(frecv_); }
 
     void run(const double* send, const std::vector<int>& sendcounts, const std::vector<int>& sdispls,
              double* recv, const std::vector<int>& recvcounts, const std::vector<int>& rdispls,
-             MPI_Comm comm, bool device, Timer& timer, int t_comm, int t_calc) {
+             MPI_Comm comm, bool device, Timer& timer, int t_comm, int t_calc,
+             bool pack_fused = false, bool unpack_fused = false) {
         float* fs = reinterpret_cast<float*>(fsend_);
         float* fr = reinterpret_cast<float*>(frecv_);
 
-        timer.start(MPI_COMM_WORLD);
-        for (const auto& r : send_runs_) to_float(fs + r.first, send + r.first, r.second - r.first, device);
-        timer.stop(t_calc, MPI_COMM_WORLD);
+        if (!pack_fused) {
+            timer.start(MPI_COMM_WORLD);
+            for (const auto& r : send_runs_) to_float(fs + r.first, send + r.first, r.second - r.first, device);
+            timer.stop(t_calc, MPI_COMM_WORLD);
+        }
 
         timer.start(MPI_COMM_WORLD);
         MPI_Alltoallv(fs, sendcounts.data(), sdispls.data(), MPI_FLOAT,
                       fr, recvcounts.data(), rdispls.data(), MPI_FLOAT, comm);
         timer.stop(t_comm, MPI_COMM_WORLD);
 
-        timer.start(MPI_COMM_WORLD);
-        for (const auto& r : recv_runs_) to_double(recv + r.first, fr + r.first, r.second - r.first, device);
-        timer.stop(t_calc, MPI_COMM_WORLD);
+        if (!unpack_fused) {
+            timer.start(MPI_COMM_WORLD);
+            for (const auto& r : recv_runs_) to_double(recv + r.first, fr + r.first, r.second - r.first, device);
+            timer.stop(t_calc, MPI_COMM_WORLD);
+        }
     }
 
 private:

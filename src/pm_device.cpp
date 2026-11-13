@@ -89,6 +89,30 @@ void pm_dev_scale_complex(double* c, const double* green, size_t n, double facto
         });
     Exec().fence();
 }
+void pm_dev_fwd_reorder_f(double* fftbuf, const float* recv, const size_t* seg, const size_t* idx,
+                          const size_t* key, size_t nseg) {
+    Kokkos::parallel_for("PM::fwd_reorder_f", Policy(0, static_cast<int64_t>(nseg)),
+        KOKKOS_LAMBDA(const int64_t s) {
+            const size_t beg = seg[s], end = seg[s + 1];
+            double acc = 0.0;
+            for (size_t k = beg; k < end; ++k) acc += static_cast<double>(recv[idx[k]]);
+            fftbuf[key[beg]] = acc;
+        });
+    Exec().fence();
+}
+
+void pm_dev_gather_index_f(float* send, const double* fftbuf, const size_t* src, size_t n) {
+    Kokkos::parallel_for("PM::bwd_reorder_f", Policy(0, static_cast<int64_t>(n)),
+        KOKKOS_LAMBDA(const int64_t i) { send[i] = static_cast<float>(fftbuf[src[i]]); });
+    Exec().fence();
+}
+
+void pm_dev_scatter_index_f(double* dst, const float* src, const size_t* idx, size_t n) {
+    Kokkos::parallel_for("PM::scatter_index_f", Policy(0, static_cast<int64_t>(n)),
+        KOKKOS_LAMBDA(const int64_t i) { dst[idx[i]] = static_cast<double>(src[i]); });
+    Exec().fence();
+}
+
 void pm_dev_to_float(float* dst, const double* src, size_t n) {
     Kokkos::parallel_for("PM::to_float", Policy(0, static_cast<int64_t>(n)),
         KOKKOS_LAMBDA(const int64_t i) { dst[i] = static_cast<float>(src[i]); });

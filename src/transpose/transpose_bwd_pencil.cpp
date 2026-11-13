@@ -285,7 +285,8 @@ void TransposeBwdPencil::reorder_from_fft() {
     timer_.start(MPI_COMM_WORLD);
 #ifdef PM_USE_KOKKOS
     if (device_) {
-        pm_dev_gather_index(sendbuf_, fftbuf_, d_pos0_, send_total_);
+        if (fcomm_.on()) pm_dev_gather_index_f(fcomm_.fsend(), fftbuf_, d_pos0_, send_total_);
+        else pm_dev_gather_index(sendbuf_, fftbuf_, d_pos0_, send_total_);
         timer_.stop(t_calc_, MPI_COMM_WORLD);
         return;
     }
@@ -295,6 +296,18 @@ void TransposeBwdPencil::reorder_from_fft() {
     const size_t* __restrict cdst = fwd_copy_dst_.data();
     const size_t* __restrict csrc = fwd_copy_src_.data();
     const size_t* __restrict clen = fwd_copy_len_.data();
+
+    if (fcomm_.on()) {
+        float* const fsend = fcomm_.fsend();
+        #pragma omp parallel for schedule(dynamic, 16)
+        for (size_t k = 0; k < M; ++k) {
+            float* __restrict d = fsend + cdst[k];
+            const double* __restrict sp = fftbuf_ + csrc[k];
+            for (size_t c = 0; c < clen[k]; ++c) d[c] = static_cast<float>(sp[c]);
+        }
+        timer_.stop(t_calc_, MPI_COMM_WORLD);
+        return;
+    }
 
     #pragma omp parallel for schedule(dynamic, 16)
     for (size_t k = 0; k < M; ++k) {
@@ -307,7 +320,8 @@ void TransposeBwdPencil::reorder_from_fft() {
 void TransposeBwdPencil::alltoallv() {
     if (fcomm_.on()) {
         fcomm_.run(sendbuf_, sendcounts_, sdispls_, recvbuf_, recvcounts_, rdispls_,
-                   a2a_comm_, device_, timer_, t_comm_, t_calc_);
+                   a2a_comm_, device_, timer_, t_comm_, t_calc_,
+                   /*pack_fused=*/true, /*unpack_fused=*/true);   // 変換は reorder_from_fft / reorder_from_alltoallv が行う
         return;
     }
     // 送受信の向きが Fwd と逆(sendcounts/sdispls で送り、recvcounts/rdispls で受ける)
@@ -325,7 +339,8 @@ void TransposeBwdPencil::reorder_from_alltoallv() {
 #ifdef PM_USE_KOKKOS
     if (device_) {
         pm_dev_zero(gridbuf_, static_cast<size_t>(nx3_) * ny3_ * nz3_);
-        pm_dev_scatter_index(gridbuf_, recvbuf_, d_pos1_, recv_total_);
+        if (fcomm_.on()) pm_dev_scatter_index_f(gridbuf_, fcomm_.frecv(), d_pos1_, recv_total_);
+        else pm_dev_scatter_index(gridbuf_, recvbuf_, d_pos1_, recv_total_);
         timer_.stop(t_calc_, MPI_COMM_WORLD);
         return;
     }
@@ -337,6 +352,18 @@ void TransposeBwdPencil::reorder_from_alltoallv() {
     const size_t* __restrict cdst = bwd_copy_dst_.data();
     const size_t* __restrict csrc = bwd_copy_src_.data();
     const size_t* __restrict clen = bwd_copy_len_.data();
+
+    if (fcomm_.on()) {
+        const float* const frecv = fcomm_.frecv();
+        #pragma omp parallel for schedule(dynamic, 16)
+        for (size_t k = 0; k < M; ++k) {
+            double* __restrict d = gridbuf_ + cdst[k];
+            const float* __restrict sp = frecv + csrc[k];
+            for (size_t c = 0; c < clen[k]; ++c) d[c] = static_cast<double>(sp[c]);
+        }
+        timer_.stop(t_calc_, MPI_COMM_WORLD);
+        return;
+    }
 
     #pragma omp parallel for schedule(dynamic, 16)
     for (size_t k = 0; k < M; ++k) {

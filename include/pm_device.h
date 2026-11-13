@@ -28,4 +28,9 @@ void pm_dev_scale_complex(double* c, const double* green, size_t n, double facto
 // 単精度での送受信（PM_COMM_FLOAT=1）: dst[i] = (float)src[i] / (double)src[i]
 void pm_dev_to_float(float* dst, const double* src, size_t n);
 void pm_dev_to_double(double* dst, const float* src, size_t n);
+// 上の 3 つの並べ替えの float 版（変換を並べ替えに融合して別パスを省く）
+void pm_dev_fwd_reorder_f(double* fftbuf, const float* recv, const size_t* seg, const size_t* idx,
+                          const size_t* key, size_t nseg);
+void pm_dev_gather_index_f(float* send, const double* fftbuf, const size_t* src, size_t n);
+void pm_dev_scatter_index_f(double* dst, const float* src, const size_t* idx, size_t n);
 #endif

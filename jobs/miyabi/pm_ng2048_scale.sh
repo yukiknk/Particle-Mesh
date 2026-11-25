@@ -16,6 +16,7 @@
 # 投入（ノード数 N は 16・32・64。Np は既定 1024³。3 回ずつなら i を回す）:
 #   for C in gpu_slab gpu_pencil cpu_ffte1d cpu_ffte2d; do
 #     qsub -l select=16:mpiprocs=72:ompthreads=1 -v N=16,COND=$C jobs/miyabi/pm_ng2048_scale.sh; done
+#   追加の環境変数は EXTRA_VARS で渡す（1 つだけ）: qsub ... -v N=64,COND=gpu_pencil,EXTRA_VARS=PM_HEFFTE_ALG=p2p_plined ...
 #   まず 16 ノードを 1 回ずつ（4 本）流して動作を確かめ、ノード時間を見てから 32・64 と 3 回に広げる
 # 集計: runs/ng2048s_*/summary.txt（`## <COND> ... exit=` の行のあとに区間ごとの中央値が続く）
 . /work/gu99/u99001/Particle-Mesh/jobs/miyabi/pm_common.sh
@@ -28,6 +29,7 @@ case $COND in
   cpu_ffte2d) FFT=ffte2d;            INTERP=cpu; P=${CPU_PPN:-$([ "$N" -ge 16 ] && echo 2 || echo 16)}; VARS="PM_COMM_FLOAT=1,PM_FFT_COMM_FLOAT=1" ;;
   *) echo "unknown COND=$COND"; exit 2 ;;
 esac
+VARS="$VARS${EXTRA_VARS:+,$EXTRA_VARS}"   # 追加の環境変数（例 EXTRA_VARS=PM_HEFFTE_ALG=p2p_plined）。qsub -v には「,」を使えないので、複数あるときは別の方法で
 T=$((72 / P))
 OUT=$PM/runs/ng2048s_${COND}_n${N}_$(date +%Y%m%d_%H%M)_${PBS_JOBID%%.*}
 mkdir -p $OUT
